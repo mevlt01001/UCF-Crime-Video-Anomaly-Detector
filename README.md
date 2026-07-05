@@ -2,12 +2,12 @@ Bu çalışma "YAPAY ZEKA DİL AJANLARI YARIŞMASI (3. Senaryo)" için geliştir
 
 Yarışma isterleri aşağıdkai gibi not edilmiştir:
 
-Sistem video girdisi alır ve;
-1- video içindeki anormal durumların tespiti yapar.
-2- anormal anları türkçe dilinde ifade eder.
-3- genel video ozeti çıkarabilir. 
-4- anormal anlara aksiyon önerileri sunar. 
-5- model servisleme altyapsına sahip olamlıdır.
+Sistem video girdisi alır ve;\
+1- video içindeki anormal durumların tespiti yapar.\
+2- anormal anları türkçe dilinde ifade eder.\
+3- genel video ozeti çıkarabilir.\
+4- anormal anlara aksiyon önerileri sunar.\
+5- model servisleme altyapsına sahip olamlıdır.\
 6- aşağıdaki gibi bir çıktı ile dışarıya bilgi verir.
 ```JSON
 {
@@ -80,6 +80,36 @@ $$l(\mathcal{B}_a, \mathcal{B}_n) = \max\left(0, 1 - \max_{i \in \mathcal{B}_a} 
 * **Sınıflandırma:** $\max\left(0, 1 - \max_{i \in \mathcal{B}_a} f(\mathcal{V}_a^i) + \max_{i \in \mathcal{B}_n} f(\mathcal{V}_n^i)\right)$ en yüksek puanlı pozitif ve negatif örnekler arasında en az $1$’lik bir güvenlik marjı sağlar.
 * **Yumuşaklık:** $\lambda_1 \sum_{i}^{(n-1)} (f(\mathcal{V}_a^i) - f(\mathcal{V}_a^{i+1}))^2$ bitişik video segmentleri arasındaki ani sınıfsal kırılmaları engeller.
 * **Seyreklik:** $\lambda_2 \sum_{i}^{n} f(\mathcal{V}_a^i)$ Anomaliler kısa süreli oalcağı için, anomali puanlarının seyrek olmasını zorunlu kılar.
+
+MIL aşamasının en önemli adımı parçalara ayrılan video kliplerinin zamansal boyutta özellik çıkarımına tabii tutulmasıdır. Bu adım paper'de C3D mimarisi ile gerçekleştirildiği belirtilmektedir. Aşağıda C3D modeli mimairisne ait görsel bulunmaktadır.
+
+![](Assets/C3D_architecture.png)
+
+Bu görsel C3D çalışmasına ait olan paper'dan elde edilmiştir. [Figure 3. C3D architecture, Sayfa 5](ReviewedPapers/Learning_Spatiotemporal_Features_with_3D_Convolutional_Networks.pdf) Aynı mimari yapı 240x240 video size için bu çalışada kullanmıştır.
+
+240x240 çözünürlüğünde küçük video parçaları kabul eden bu ağ her video parçası/segment için 25088 elemanlı bir feature vektörü üretmektedir. Bu vektör FC katmanlarından sırası ile 4096, 512, 32, 1 boytularına indirgenir ve en sonunda sigmoid bir aktivasyona tabii tutularak anomalite skoru oluşturulur. 
+
+**Bir videodan hangi kısımlarında anomalilik olduğu nasıl tespit edileceği özetlenecek olunursa;**\
+*Eğitim aşamasında;*\
+1- Öncelikle bir anomali içeren ve bir de içermeyen video seçilir.\
+2- Her iki video 30 FPS'e uyarlanır.\
+2- Ardından videolar 32 tane segmente ayrılır.\
+3- Segmentlerdeki frameler normalize edilir.\
+4- Anomali içeren videonun tüm segmentleri C3D+FC modeline verilir.\
+5- Anomali içermeyen videonun tüm segmentleri C3D+FC modeline verilir.\
+6- Anomeli içeren segmentler arasında en yüksek skora ile anomali içermeyen videodaki segmentler arasındaki en yüksek skor alınarak yukarıda belirtilen Loss fonksiyonunda işlenir ve geri yayılım yapılırak model ağırlıkları optimize edilir.
+
+Böylece 1 batch'lik eğitim döngüsü tamamlanmış olur.
+
+*Inference aşamasında;*\
+1- herhangi bir video seçilir.\
+2- Video 30 FPS'e uyarlanır.\
+2- Videolar 32 tane segmente ayrılır.\
+3- Segmentlerdeki frameler normalize edilir.\
+4- Videonun tüm segmentleri C3D+FC modeline verilir.\
+5- modelin çıktısında 0.5 den yüksek olan tüm segmentler anomali olarak sınıflandırılır.
+
+Segmentlerden video Frame-FPS-süre hesabı yapılarak anomali içeren zaman aralıkları tespit edilir ve sıstem dışındaki diğer alt sistemlere bilgi aktarabilir.
 
 ## İster 2, 3: Genel video ve Anormal anları türkçe dilinde ifade eder:
 
