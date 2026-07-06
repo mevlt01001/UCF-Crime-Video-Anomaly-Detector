@@ -33,27 +33,20 @@ class C3D_FeatureExtractor(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x.shape: (B, C, S, H, W)
+        x.shape: (B, C, S, H, W) -> Tamamen dinamik SEQ desteği
         """
         B, C, S, H, W = x.shape
 
-        if S < self.clip_size:
-            pad_size = self.clip_size - S
-            x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
-            S = self.clip_size
+        pad_size = max(0, self.clip_size - S)
+        x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
+        S = x.shape[2]
 
-        clips = []
-        for start_idx in range(0, S - self.clip_size + 1, self.stride):
-            clips.append(x[:, :, start_idx : start_idx + self.clip_size, :, :])
-            
-        last_start = list(range(0, S - self.clip_size + 1, self.stride))[-1]
-        if last_start + self.clip_size < S:
-            clips.append(x[:, :, S - self.clip_size : S, :, :])
-
-        x_clips = torch.stack(clips, dim=1)
+        x_unfolded = x.unfold(2, self.clip_size, self.stride)
+        
+        x_clips = x_unfolded.permute(0, 2, 1, 5, 3, 4)
         num_clips = x_clips.shape[1]
 
-        h = x_clips.reshape(B * num_clips, C, self.clip_size, H, W)
+        h = x_clips.reshape(-1, C, self.clip_size, H, W)
 
         h = self.relu(self.conv1(h))
         h = self.pool1(h)
@@ -74,7 +67,6 @@ class C3D_FeatureExtractor(nn.Module):
         h = self.pool5(h)
 
         h = h.reshape(B, num_clips, -1)
-        
         h = h.mean(dim=1)
 
         return h
