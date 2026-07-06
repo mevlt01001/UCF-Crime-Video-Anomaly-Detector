@@ -28,13 +28,17 @@ def fetch_video_patches(video_path: str,
     for target_idx in range(clean_target_frames):
         needed_orig_idx = int(target_idx / ratio)
 
-        while current_orig_idx < needed_orig_idx:
-            ret, frame = cap.read()
-            if not ret:
+        while current_orig_idx < needed_orig_idx - 1:
+            if not cap.grab():
                 break
             current_orig_idx += 1
-            last_frame = frame
-        
+
+        if current_orig_idx < needed_orig_idx:
+            ret, frame = cap.read()
+            if ret:
+                current_orig_idx += 1
+                last_frame = frame
+
         if last_frame is None:
             break
             
