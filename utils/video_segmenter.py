@@ -117,15 +117,6 @@ def video_segmenter_trainer(model: VideoSegmenter,
             
             anormal_loader = DataLoader(anormal_dataset, batch_size=batch_size, shuffle=True)
             normal_loader = DataLoader(normal_dataset, batch_size=batch_size, shuffle=True)
-
-            scaler = torch.cuda.amp.GradScaler()
-            with torch.cuda.amp.autocast():
-                y_anomaly = model(anormal_batch)
-                y_normal = model(normal_batch)
-                loss = criterion(y_anomaly, y_normal)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
             
             optimizer.zero_grad()
             
