@@ -58,7 +58,7 @@ class VideoSegmenterLoss(nn.Module):
 def extract_offline_features(extractor: C3D_FeatureExtractor, video_paths: list, save_dir: str, patch_size: int = 32, resize_dim: tuple = (128, 128)):
     os.makedirs(save_dir, exist_ok=True)
     extractor.to("cuda")
-    extractor.eval()
+    extractor.eval().half()
     
     for vp in tqdm(video_paths):
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
@@ -67,9 +67,9 @@ def extract_offline_features(extractor: C3D_FeatureExtractor, video_paths: list,
             
         segment_features = []
         for segment in fetch_video_patches(vp, target_fps=30, patch_size=patch_size, resize_dim=resize_dim):
-            segment = segment.to("cuda") # (1, 3, seq_len, 128, 128)
-            feat = extractor(segment)    # (1, 8192)
-            segment_features.append(feat.cpu())
+            segment = segment.to("cuda").half() # (1, 3, seq_len, 128, 128)
+            feat = extractor.forward(segment)    # (1, 8192)
+            segment_features.append(feat.cpu().float())
         
         if len(segment_features) == patch_size:
             video_feature = torch.cat(segment_features, dim=0) 
