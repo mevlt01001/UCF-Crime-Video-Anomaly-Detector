@@ -55,27 +55,50 @@ class VideoSegmenterLoss(nn.Module):
         return mean_hinge + mean_smoothness + mean_sparsity
 
 @torch.no_grad()
-def extract_offline_features(extractor: C3D_FeatureExtractor, video_paths: list, save_dir: str, patch_size: int = 32, resize_dim: tuple = (128, 128)):
+def extract_C3D_features(extractor, 
+                             video_paths: list, 
+                             save_dir: str, 
+                             patch_size: int = 32, 
+                             batch:int=4, 
+                             resize_dim: tuple = (128, 128)):
+    
     os.makedirs(save_dir, exist_ok=True)
-    extractor.to("cuda")
+    
+    if not isinstance(extractor, torch.nn.DataParallel):
+        extractor = extractor.to("cuda")
     extractor.eval()
     
-    for vp in tqdm(video_paths):
-        save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
-        if os.path.exists(save_path): 
-            continue
+    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+        for vp in tqdm(video_paths):
+            save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
+            if os.path.exists(save_path): 
+                continue
+                
+            all_segments = []
+            for segment in fetch_video_patches(vp, target_fps=30, patch_size=patch_size, resize_dim=resize_dim):
+                all_segments.append(segment) # segment: (1, 3, seq_len, 128, 128)
             
-        segment_features = []
-        for segment in fetch_video_patches(vp, target_fps=30, patch_size=patch_size, resize_dim=resize_dim):
-            segment = segment.to("cuda") # (1, 3, seq_len, 128, 128)
-            feat = extractor.forward(segment)    # (1, 8192)
-            segment_features.append(feat.cpu().float())
-        
-        if len(segment_features) == patch_size:
-            video_feature = torch.cat(segment_features, dim=0) 
-            torch.save(video_feature, save_path)    # [32, 8192]
-        else:
-            raise f"len(segment_features) != patch_size"
+            if len(all_segments) != patch_size:
+                print(f"len(segment_features) != patch_size")
+                continue
+            
+            video_batch = torch.cat(all_segments, dim=0) # (32, 3, S, 128, 128)
+            
+            mini_batch_size = batch
+            video_feature_list = []
+            
+            for i in range(0, patch_size, mini_batch_size):
+                mini_batch = video_batch[i:i + mini_batch_size] # (4, 3, S, 128, 128)
+                print(mini_batch.shape)
+                
+                mini_batch = mini_batch.to("cuda", non_blocking=True)
+                
+                mini_feat = extractor(mini_batch) # Boyut: (4, 8192)
+                
+                video_feature_list.append(mini_feat.cpu().float())
+            
+            video_feature = torch.cat(video_feature_list, dim=0)
+            torch.save(video_feature, save_path)
 
 def MIL_network_trainer(model: MILRankingNetwork, 
                         anormal_feat_dir: str, 
