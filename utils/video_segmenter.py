@@ -11,8 +11,8 @@ from .video_preprocess import fetch_video_patches
 class MILRankingNetwork(nn.Module):
     def __init__(self, input_dim=8192):
         super(MILRankingNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 4096)
-        self.fc2 = nn.Linear(4096, 512)
+        self.fc1 = nn.Linear(input_dim, 2048)
+        self.fc2 = nn.Linear(2048, 512)
         self.fc3 = nn.Linear(512, 32)
         self.fc4 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
