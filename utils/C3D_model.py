@@ -79,13 +79,13 @@ class C3D_FeatureExtractor(nn.Module):
 
         return h
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
-#     data = torch.randn(2, 3, 13, 240, 240).to("cuda")
-#     model = C3D_FeatureExtractor().to("cuda")
-#     output = model(data)
-#     print(output.shape)
+    data = torch.randn(2, 3, 13, 128, 128).to("cuda")
+    model = C3D_FeatureExtractor().to("cuda")
+    output = model(data)
+    print(output.shape)
 
-#     # OUTPUT
-#     # torch.Size([2, 25088])
+    # OUTPUT
+    # torch.Size([2, 25088])
     

@@ -10,7 +10,7 @@ class VideoSegmenter(nn.Module):
     def __init__(self):
         super(VideoSegmenter, self).__init__()
         self.feature_extractor = C3D_FeatureExtractor()
-        self.fc1 = nn.Linear(25088, 4096)
+        self.fc1 = nn.Linear(8192, 4096)
         self.fc2 = nn.Linear(4096, 512)
         self.fc3 = nn.Linear(512, 32)
         self.fc4 = nn.Linear(32, 1)
@@ -31,7 +31,7 @@ class VideoSegmenter(nn.Module):
     
 if __name__ == "__main__":
     model = VideoSegmenter().to("cuda")
-    data = torch.randn(2, 3, 13, 240, 240).to("cuda")
+    data = torch.randn(2, 3, 13, 128, 128).to("cuda")
     output = model(data)
     print(output)
 
@@ -57,7 +57,6 @@ class VideoSegmenterLoss(nn.Module):
         self.lambda_1 = lambda_1
         self.lambda_2 = lambda_2
 
-    @torch.no_grad()
     def forward(self, y_anomaly, y_normal):
         """
         y_anomaly: (Batch, Num_Segments)
@@ -118,6 +117,15 @@ def video_segmenter_trainer(model: VideoSegmenter,
             
             anormal_loader = DataLoader(anormal_dataset, batch_size=batch_size, shuffle=True)
             normal_loader = DataLoader(normal_dataset, batch_size=batch_size, shuffle=True)
+
+            scaler = torch.cuda.amp.GradScaler()
+            with torch.cuda.amp.autocast():
+                y_anomaly = model(anormal_batch)
+                y_normal = model(normal_batch)
+                loss = criterion(y_anomaly, y_normal)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             optimizer.zero_grad()
             
