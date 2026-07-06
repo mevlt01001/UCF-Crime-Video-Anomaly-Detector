@@ -94,8 +94,8 @@ def video_segmenter_trainer(model: VideoSegmenter,
     criterion = VideoSegmenterLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-    normal_video_paths = [os.path.join(normal_videos_path, video) for video in os.listdir(normal_videos_path)]
-    anormal_video_paths = [os.path.join(anormal_videos_path, video) for video in os.listdir(anormal_videos_path)]
+    normal_video_paths = normal_videos_path
+    anormal_video_paths = anormal_videos_path
 
     best_loss = float('inf')
     
