@@ -2,7 +2,11 @@ import cv2
 import torch
 import numpy as np
 
-def fetch_video_patches(video_path: str, target_fps: int = 30, patch_size: int = 32, resize_dim: tuple = (112, 112)):
+def fetch_video_patches(video_path: str, 
+                        target_fps: int = 30, 
+                        patch_size: int = 32, 
+                        resize_dim: tuple = (112, 112)):
+    
     cap = cv2.VideoCapture(video_path)
 
     if not cap.isOpened():
@@ -55,11 +59,11 @@ def process_patch(frames_list):
     tensor = tensor.permute(0, 4, 1, 2, 3) 
     return tensor
 
-if __name__ == "__main__":
-    video_path = "Project_Final_Video.mp4"
+# if __name__ == "__main__":
+#     video_path = "Project_Final_Video.mp4"
     
-    for i, patch_tensor in enumerate(fetch_video_patches(video_path, target_fps=30, patch_size=32, resize_dim=(320, 320))):
-        print(f"Patch {i} shape:", patch_tensor.shape) 
+#     for i, patch_tensor in enumerate(fetch_video_patches(video_path, target_fps=30, patch_size=32, resize_dim=(320, 320))):
+#         print(f"Patch {i} shape:", patch_tensor.shape) 
 
       # OUTPUT:
       # Patch 0  shape: torch.Size([1, 3, 31, 320, 320])

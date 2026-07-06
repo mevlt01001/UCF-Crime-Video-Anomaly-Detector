@@ -53,7 +53,7 @@ class C3D_FeatureExtractor(nn.Module):
         x_clips = torch.stack(clips, dim=1)
         num_clips = x_clips.shape[1]
 
-        h = x_clips.view(B * num_clips, C, self.clip_size, H, W)
+        h = x_clips.reshape(B * num_clips, C, self.clip_size, H, W)
 
         h = self.relu(self.conv1(h))
         h = self.pool1(h)
@@ -79,13 +79,13 @@ class C3D_FeatureExtractor(nn.Module):
 
         return h
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    data = torch.randn(2, 3, 13, 240, 240).to("cuda")
-    model = C3D_FeatureExtractor().to("cuda")
-    output = model(data)
-    print(output.shape)
+#     data = torch.randn(2, 3, 13, 240, 240).to("cuda")
+#     model = C3D_FeatureExtractor().to("cuda")
+#     output = model(data)
+#     print(output.shape)
 
-    # OUTPUT
-    # torch.Size([2, 25088])
+#     # OUTPUT
+#     # torch.Size([2, 25088])
     

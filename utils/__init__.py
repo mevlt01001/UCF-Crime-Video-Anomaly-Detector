@@ -1,2 +1,3 @@
-from video_segmenter import VideoSegmenter
-from video_preprocess import fetch_video_patches
+from .video_segmenter import VideoSegmenter, video_segmenter_trainer
+from .video_preprocess import fetch_video_patches
+from .C3D_model import C3D_FeatureExtractor
