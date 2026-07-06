@@ -53,7 +53,7 @@ class C3D_FeatureExtractor(nn.Module):
         x_clips = torch.stack(clips, dim=1)
         num_clips = x_clips.shape[1]
 
-        h = x_clips.reshape(B * num_clips, C, self.clip_size, H, W)
+        h = x_clips.contiguous().view(B * num_clips, C, self.clip_size, H, W)
 
         h = self.relu(self.conv1(h))
         h = self.pool1(h)
