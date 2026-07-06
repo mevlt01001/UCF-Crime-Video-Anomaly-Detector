@@ -5,7 +5,6 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from .C3D_model import C3D_FeatureExtractor
 from .video_preprocess import fetch_video_patches
 
 class MILRankingNetwork(nn.Module):
@@ -55,51 +54,67 @@ class VideoSegmenterLoss(nn.Module):
         
         return mean_hinge + mean_smoothness + mean_sparsity
 
+
 @torch.no_grad()
-def extract_C3D_features(extractor, 
-                             video_paths: list, 
-                             save_dir: str, 
-                             patch_size: int = 32, 
-                             batch:int=4, 
-                             resize_dim: tuple = (128, 128)):
-    
+def extract_C3D_features(extractor,
+                          video_paths: list,
+                          save_dir: str,
+                          patch_size: int = 32,
+                          batch: int = 4,
+                          resize_dim: tuple = (112, 112)):
+
     os.makedirs(save_dir, exist_ok=True)
-    
-    if not isinstance(extractor, torch.nn.DataParallel):
+
+    is_dp = isinstance(extractor, torch.nn.DataParallel)
+    if not is_dp:
         extractor = extractor.to("cuda")
     extractor.eval()
-    
-    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-        for vp in tqdm(video_paths):
-            save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
-            if os.path.exists(save_path): 
-                continue
-                
-            all_segments = []
-            for segment in fetch_video_patches(vp, target_fps=30, patch_size=patch_size, resize_dim=resize_dim):
-                all_segments.append(segment) # segment: (1, 3, seq_len, 128, 128)
-            
-            if len(all_segments) != patch_size:
-                print(f"len(segment_features) != patch_size")
-                continue
-            
-            video_batch = torch.cat(all_segments, dim=0) # (32, 3, S, 128, 128)
-            
-            mini_batch_size = batch
-            video_feature_list = []
-            
-            for i in range(0, patch_size, mini_batch_size):
-                mini_batch = video_batch[i:i + mini_batch_size] # (4, 3, S, 128, 128)
-                print(mini_batch.shape)
-                
-                mini_batch = mini_batch.to("cuda", non_blocking=True)
-                
-                mini_feat = extractor(mini_batch) # Boyut: (4, 8192)
-                
-                video_feature_list.append(mini_feat.cpu().float())
-            
-            video_feature = torch.cat(video_feature_list, dim=0)
-            torch.save(video_feature, save_path)
+
+    for vp in tqdm(video_paths):
+        save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
+        if os.path.exists(save_path):
+            continue
+
+        video_feature_list = []
+        mini_batch_buffer = []
+        num_segments_seen = 0
+
+        def flush_buffer():
+            if not mini_batch_buffer:
+                return
+            mini_batch = torch.cat(mini_batch_buffer, dim=0)  # (b, 3, S, H, W) uint8
+            mini_batch_buffer.clear()
+
+            mini_batch = mini_batch.to("cuda", non_blocking=True)
+            mini_batch = mini_batch.float().div_(255.0)
+
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                mini_feat = extractor(mini_batch)  # (b, 8192)
+
+            video_feature_list.append(mini_feat.detach().cpu().float())
+            del mini_batch, mini_feat
+
+        for segment in fetch_video_patches(vp, target_fps=30, patch_size=patch_size, resize_dim=resize_dim):
+            # segment: (1, 3, seq_len, H, W) uint8
+            mini_batch_buffer.append(segment)
+            num_segments_seen += 1
+
+            if len(mini_batch_buffer) == batch:
+                flush_buffer()
+
+        flush_buffer()
+
+        if num_segments_seen != patch_size:
+            print(f"[SKIP] {vp}: Expected {patch_size} segment, got {num_segments_seen}")
+            torch.cuda.empty_cache()
+            continue
+
+        video_feature = torch.cat(video_feature_list, dim=0)  # (patch_size, 8192)
+        torch.save(video_feature, save_path)
+
+        del video_feature_list, video_feature
+        torch.cuda.empty_cache()
+
 
 def MIL_network_trainer(model: MILRankingNetwork, 
                         anormal_feat_dir: str, 
@@ -113,13 +128,14 @@ def MIL_network_trainer(model: MILRankingNetwork,
     anormal_files = [os.path.join(anormal_feat_dir, f) for f in os.listdir(anormal_feat_dir) if f.endswith('.pt')]
     normal_files = [os.path.join(normal_feat_dir, f) for f in os.listdir(normal_feat_dir) if f.endswith('.pt')]
 
+    best_loss = float("inf")  
+
     for epoch_idx in range(epochs):
         random.shuffle(anormal_files)
         random.shuffle(normal_files)
 
         epoch_loss = 0.0
-        best_loss = float("inf")
-        
+
         for i, anormal_file in enumerate(anormal_files):
             normal_file = random.choice(normal_files)
 
@@ -140,8 +156,9 @@ def MIL_network_trainer(model: MILRankingNetwork,
             
             print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: {(i+1)/len(anormal_files):5.3f} - Loss: {loss.item():.6f}", end="\r")
         
-        if epoch_loss/len(anormal_files) < best_loss:
-            best_loss = epoch_loss/len(anormal_files)
+        avg_loss = epoch_loss / len(anormal_files)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
             torch.save(model.state_dict(), "best.pt")
 
         torch.save(model.state_dict(), "last.pt")

@@ -80,4 +80,3 @@ if __name__ == "__main__":
 
     # OUTPUT
     # torch.Size([2, 25088])
-    
