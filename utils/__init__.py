@@ -1,4 +1,4 @@
-from .video_segmenter import extract_C3D_features, MILRankingNetwork, MIL_network_trainer
+from .video_segmenter import MILRankingNetwork, MIL_network_trainer
 from .video_preprocess import fetch_video_patches
-from .C3D_model import C3D_FeatureExtractor
+from .C3D_model import C3D_FeatureExtractor, extract_C3D_features
 from .c3d import C3D

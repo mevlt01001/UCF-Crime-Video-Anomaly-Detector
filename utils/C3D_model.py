@@ -1,7 +1,11 @@
+import os
+import cv2
+import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .c3d import C3D
+from .video_preprocess import fetch_video_patches
 
 
 class C3D_FeatureExtractor(nn.Module):
@@ -41,11 +45,136 @@ class C3D_FeatureExtractor(nn.Module):
 
         return h
 
+def _probe_segment_length(video_path: str, target_fps: int, patch_size: int):
 
-if __name__ == "__main__":
-    data = torch.randn(4, 3, 54, 112, 112).to("cuda")
-    model = C3D_FeatureExtractor("c3d.pickle", clip_size=16, overlap=8).to("cuda")
-    output = model(data)
-    print(output.shape)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return None
 
-    # OUTPUT beklenen: torch.Size([2, 4096])
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    original_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    if original_fps <= 0 or original_frames <= 0:
+        return None
+
+    ratio = target_fps / original_fps
+    target_frames = int(original_frames * ratio)
+    S = target_frames // patch_size
+    return S
+
+def _num_clips_for_segment(S: int, clip_size: int, stride: int) -> int:
+    S_eff = max(S, clip_size) 
+    return (S_eff - clip_size) // stride + 1
+
+def _estimate_conv1_bytes(num_clips_in_batch: int, resize_dim: tuple,
+                           clip_size: int, dtype_bytes: int = 4,
+                           conv1_channels: int = 64) -> int:
+    H, W = resize_dim
+    bytes_per_clip = conv1_channels * clip_size * H * W * dtype_bytes
+    return bytes_per_clip * num_clips_in_batch
+
+@torch.no_grad()
+def extract_C3D_features(extractor,
+                          video_paths: list,
+                          save_dir: str,
+                          patch_size: int = 32,
+                          batch: int = 4,
+                          resize_dim: tuple = (112, 112),
+                          target_fps: int = 30,
+                          safe_vram_gb: float = 3.0,
+                          skip_log_path: str = None):
+
+    os.makedirs(save_dir, exist_ok=True)
+    if skip_log_path is None:
+        skip_log_path = os.path.join(save_dir, "skipped_videos_vram.txt")
+
+    is_dp = isinstance(extractor, torch.nn.DataParallel)
+    core_model = extractor.module if is_dp else extractor
+    clip_size = core_model.clip_size
+    stride = core_model.stride
+
+    if not is_dp:
+        extractor = extractor.to("cuda")
+    extractor.eval()
+
+    safe_budget_bytes = safe_vram_gb * (1024 ** 3)
+    bytes_per_clip = _estimate_conv1_bytes(1, resize_dim, clip_size)
+
+    skipped = []
+
+    for vp in tqdm(video_paths):
+        save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
+        if os.path.exists(save_path):
+            continue
+
+        S = _probe_segment_length(vp, target_fps, patch_size)
+        if S is None:
+            print(f"[SKIP] {vp}: Metadata did not read!")
+            skipped.append((vp, "Metadata did not read!"))
+            continue
+
+        num_clips = _num_clips_for_segment(S, clip_size, stride)
+        single_segment_bytes = bytes_per_clip * num_clips
+
+        if single_segment_bytes > safe_budget_bytes:
+            est_gb = single_segment_bytes / (1024 ** 3)
+            msg = (f"~{num_clips} clips per segment, ~{est_gb:.2f} GB Estimated"
+                   f"(Budget: {safe_vram_gb:.2f} GB) -- VRAM'i booming, skipped.")
+            print(f"[SKIP] {vp}: {msg}")
+            skipped.append((vp, msg))
+            continue
+
+        effective_batch = max(1, min(batch, int(safe_budget_bytes // single_segment_bytes)))
+
+        video_feature_list = []
+        mini_batch_buffer = []
+        num_segments_seen = 0
+
+        def flush_buffer():
+            if not mini_batch_buffer:
+                return
+            mini_batch = torch.cat(mini_batch_buffer, dim=0)  # (b, 3, S, H, W) uint8
+            mini_batch_buffer.clear()
+
+            mini_batch = mini_batch.to("cuda", non_blocking=True)
+            mini_batch = mini_batch.float().div_(255.0)
+
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                mini_feat = extractor(mini_batch)  # (b, 8192)
+
+            video_feature_list.append(mini_feat.detach().cpu().float())
+            del mini_batch, mini_feat
+
+        for segment in fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, resize_dim=resize_dim):
+            mini_batch_buffer.append(segment)
+            num_segments_seen += 1
+
+            if len(mini_batch_buffer) == effective_batch:
+                flush_buffer()
+
+        flush_buffer()
+
+        if num_segments_seen != patch_size:
+            print(f"\n[SKIP] {vp}: Expected {patch_size} segment, got {num_segments_seen}")
+            torch.cuda.empty_cache()
+            continue
+
+        video_feature = torch.cat(video_feature_list, dim=0)  # (patch_size, 4096)
+        torch.save(video_feature, save_path)
+
+        del video_feature_list, video_feature
+        torch.cuda.empty_cache()
+
+    if skipped:
+        with open(skip_log_path, "w") as f:
+            for vp, reason in skipped:
+                f.write(f"{vp}\t{reason}\n")
+        print(f"\nNumber of {len(skipped)} videos skipped due to VRAM -> {skip_log_path}")
+
+# if __name__ == "__main__":
+#     data = torch.randn(4, 3, 54, 112, 112).to("cuda")
+#     model = C3D_FeatureExtractor("c3d.pickle", clip_size=16, overlap=8).to("cuda")
+#     output = model(data)
+#     print(output.shape)

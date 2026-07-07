@@ -1,4 +1,9 @@
+*.pt
+*.pickle
 *.mp4
 *.mkv
 *demo*
 *.ipynb
+extracted_anomaly_features
+extracted_normal_features
+*test*
