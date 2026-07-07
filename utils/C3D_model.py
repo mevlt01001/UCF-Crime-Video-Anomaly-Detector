@@ -32,7 +32,9 @@ class C3D_FeatureExtractor(nn.Module):
 
         h = x_clips.reshape(-1, C, self.clip_size, H, W)
 
-        h = self.C3D.extract(h, layer="fc6")     # (B*num_clips, 4096)
+        h = self.C3D.extract(h, layer="fc6")
+        
+        h = F.normalize(h, p=2, dim=-1)
 
         h = h.reshape(B, num_clips, -1)
         h = h.mean(dim=1)

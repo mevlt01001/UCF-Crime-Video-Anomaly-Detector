@@ -9,29 +9,28 @@ from tqdm import tqdm
 from .video_preprocess import fetch_video_patches
 
 class MILRankingNetwork(nn.Module):
-    def __init__(self, input_dim=8192):
+    def __init__(self, input_dim=4096): # Sultani modeliyle uyumlu boyut
         super(MILRankingNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 2048)
-        self.fc2 = nn.Linear(2048, 512)
-        self.fc3 = nn.Linear(512, 32)
-        self.fc4 = nn.Linear(32, 1)
-        self.relu = nn.ReLU()
+        self.fc1 = nn.Linear(input_dim, 512)
+        self.fc2 = nn.Linear(512, 32)
+        self.fc3 = nn.Linear(32, 1)
+        self.relu = nn.LeakyReLU()
         self.sigmoid = nn.Sigmoid()
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=0.5)
+
 
     def forward(self, x):
-        # x.shape: (Batch, 32, 8192)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
-        x = self.relu(self.fc2(x))
+        x = self.fc2(x)
+        x = self.relu(x)
         x = self.dropout(x)
-        x = self.relu(self.fc3(x))
-        x = self.fc4(x)
+        x = self.fc3(x)
         x = self.sigmoid(x)
-        return x.squeeze(-1) # (Batch, 32)
+        return x.squeeze(-1)
 
 class VideoSegmenterLoss(nn.Module):
-    def __init__(self, lambda_1=8e-5, lambda_2=8e-5):
+    def __init__(self, lambda_1=0, lambda_2=0):
         super(VideoSegmenterLoss, self).__init__()
         self.lambda_1 = lambda_1
         self.lambda_2 = lambda_2
@@ -196,8 +195,9 @@ def MIL_network_trainer(model: MILRankingNetwork,
     
     model = model.train(True)
     
-    criterion = VideoSegmenterLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    criterion = VideoSegmenterLoss(lambda_1=8e-5, lambda_2=8e-5)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = torch.optim.Adagrad(model.parameters(), lr=0.001, weight_decay=0.01)
 
     anormal_files = [os.path.join(anormal_feat_dir, f) for f in os.listdir(anormal_feat_dir) if f.endswith('.pt')]
     normal_files = [os.path.join(normal_feat_dir, f) for f in os.listdir(normal_feat_dir) if f.endswith('.pt')]
@@ -213,6 +213,7 @@ def MIL_network_trainer(model: MILRankingNetwork,
         num_batches = (len(anormal_files) + batch_size - 1) // batch_size
 
         for i in range(num_batches):
+            optimizer.zero_grad()
             # O anki batch için anormal dosyaları alıyoruz
             batch_anormal_files = anormal_files[i * batch_size : (i + 1) * batch_size]
             current_b_size = len(batch_anormal_files)
@@ -223,11 +224,12 @@ def MIL_network_trainer(model: MILRankingNetwork,
             # Dosyaları yükleyip torch.stack ile birleştiriyoruz (B, 32, 8192)
             feat_anomaly = torch.stack([torch.load(f) for f in batch_anormal_files]).to("cuda")
             feat_normal = torch.stack([torch.load(f) for f in batch_normal_files]).to("cuda")
-
-            optimizer.zero_grad()
             
             y_anomaly = model.forward(feat_anomaly) # [B, 32]
             y_normal = model.forward(feat_normal)   # [B, 32]
+
+            # print(f"normal_video_segment scores: {y_normal}")
+            # print(f"anormal_video_segment scores: {y_anomaly}")
         
             loss = criterion.forward(y_anomaly, y_normal)
             
@@ -239,7 +241,6 @@ def MIL_network_trainer(model: MILRankingNetwork,
             progress_percent = ((i + 1) / num_batches) * 100
             print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Loss: {loss.item():.6f}", end="\r")
         
-        # Alt satıra geçmesi için print ekliyoruz ki progress bar ezilmesin
         print()
         
         avg_loss = epoch_loss / num_batches
