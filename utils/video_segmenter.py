@@ -17,7 +17,7 @@ class MILRankingNetwork(nn.Module):
         self.fc4 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
-        self.dropout = nn.Dropout(p=0.6)
+        self.dropout = nn.Dropout(p=0.2)
 
     def forward(self, x):
         # x.shape: (Batch, 32, 8192)
@@ -191,7 +191,10 @@ def MIL_network_trainer(model: MILRankingNetwork,
                         anormal_feat_dir: str, 
                         normal_feat_dir: str, 
                         epochs: int=10, 
-                        learning_rate: float=0.001):
+                        learning_rate: float=0.001,
+                        batch_size: int=16): # Batch parametresi eklendi
+    
+    model = model.train(True)
     
     criterion = VideoSegmenterLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
@@ -203,20 +206,28 @@ def MIL_network_trainer(model: MILRankingNetwork,
 
     for epoch_idx in range(epochs):
         random.shuffle(anormal_files)
-        random.shuffle(normal_files)
-
+        
         epoch_loss = 0.0
+        
+        # Toplam batch sayısını hesaplıyoruz
+        num_batches = (len(anormal_files) + batch_size - 1) // batch_size
 
-        for i, anormal_file in enumerate(anormal_files):
-            normal_file = random.choice(normal_files)
+        for i in range(num_batches):
+            # O anki batch için anormal dosyaları alıyoruz
+            batch_anormal_files = anormal_files[i * batch_size : (i + 1) * batch_size]
+            current_b_size = len(batch_anormal_files)
+            
+            # Aynı sayıda rastgele normal dosya seçiyoruz
+            batch_normal_files = random.choices(normal_files, k=current_b_size)
 
-            feat_anomaly = torch.load(anormal_file).unsqueeze(0).to("cuda") # (1, 32, 8192)
-            feat_normal = torch.load(normal_file).unsqueeze(0).to("cuda")   # (1, 32, 8192)
+            # Dosyaları yükleyip torch.stack ile birleştiriyoruz (B, 32, 8192)
+            feat_anomaly = torch.stack([torch.load(f) for f in batch_anormal_files]).to("cuda")
+            feat_normal = torch.stack([torch.load(f) for f in batch_normal_files]).to("cuda")
 
             optimizer.zero_grad()
             
-            y_anomaly = model.forward(feat_anomaly) # [1, 32]
-            y_normal = model.forward(feat_normal)   # [1, 32]
+            y_anomaly = model.forward(feat_anomaly) # [B, 32]
+            y_normal = model.forward(feat_normal)   # [B, 32]
         
             loss = criterion.forward(y_anomaly, y_normal)
             
@@ -225,9 +236,13 @@ def MIL_network_trainer(model: MILRankingNetwork,
 
             epoch_loss += loss.item()
             
-            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: {(i+1)/len(anormal_files):5.3f} - Loss: {loss.item():.6f}", end="\r")
+            progress_percent = ((i + 1) / num_batches) * 100
+            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Loss: {loss.item():.6f}", end="\r")
         
-        avg_loss = epoch_loss / len(anormal_files)
+        # Alt satıra geçmesi için print ekliyoruz ki progress bar ezilmesin
+        print()
+        
+        avg_loss = epoch_loss / num_batches
         if avg_loss < best_loss:
             best_loss = avg_loss
             torch.save(model.state_dict(), "best.pt")
