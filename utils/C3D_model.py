@@ -1,49 +1,96 @@
 import os
 import cv2
-import tqdm
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .c3d import C3D
+# from .c3d import C3D
 from .video_preprocess import fetch_video_patches
-
+from torchvision.models.video import r2plus1d_18, R2Plus1D_18_Weights
 
 class C3D_FeatureExtractor(nn.Module):
-
-    def __init__(self, pt_file: str, clip_size: int = 16, overlap: int = 0):
+    def __init__(self, clip_size: int = 16, overlap: int = 0):
         super(C3D_FeatureExtractor, self).__init__()
         self.clip_size = clip_size
         self.overlap = overlap
         self.stride = clip_size - overlap
 
-        self.C3D = C3D(n_classes=487)
-        state_dict = torch.load(pt_file, map_location="cpu")
-        self.C3D.load_state_dict(state_dict)
+        # 1. Pytorch'un Kinetics-400 ile eğitilmiş yerleşik modelini yüklüyoruz
+        weights = R2Plus1D_18_Weights.DEFAULT
+        self.backbone = r2plus1d_18(weights=weights)
+
+        # 2. Sınıflandırma (FC) katmanını kesip atıyoruz, sadece 512 boyutlu özellikleri istiyoruz
+        self.backbone.fc = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x.shape: (B, C, S, H, W), H=W=112 
+        x.shape: (B, C, S, H, W)
+        R(2+1)D modeli 112x112 piksel boyutlarında harika çalışır.
         """
         B, C, S, H, W = x.shape
 
+        # Padding (Eğer video kare sayısı clip_size'dan küçükse 0 ile doldur)
         pad_size = max(0, self.clip_size - S)
-        x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
-        S = x.shape[2]
+        if pad_size > 0:
+            x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
+            S = x.shape[2]
 
+        # Videoyu 16 karelik alt kliplere ayırma
         x_unfolded = x.unfold(2, self.clip_size, self.stride)
         x_clips = x_unfolded.permute(0, 2, 1, 5, 3, 4)
         num_clips = x_clips.shape[1]
 
+        # Modele göndermek için batch ve clip boyutlarını birleştir
         h = x_clips.reshape(-1, C, self.clip_size, H, W)
 
-        h = self.C3D.extract(h, layer="fc6")
-        
+        # R(2+1)D ile özellikleri çıkar (Çıktı: B*num_clips, 512)
+        h = self.backbone(h)
+
+        # Vektörleri normalize et (MIL ağının dengeli öğrenmesi için hayati önem taşır)
         h = F.normalize(h, p=2, dim=-1)
 
+        # Kliplerin ortalamasını alarak tüm video segmenti için tek vektör oluştur
         h = h.reshape(B, num_clips, -1)
-        h = h.mean(dim=1)
+        h = h.mean(dim=1) # Son Çıktı: (B, 512)
 
         return h
+
+# class C3D_FeatureExtractor(nn.Module):
+
+#     def __init__(self, pt_file: str, clip_size: int = 16, overlap: int = 0):
+#         super(C3D_FeatureExtractor, self).__init__()
+#         self.clip_size = clip_size
+#         self.overlap = overlap
+#         self.stride = clip_size - overlap
+
+#         self.C3D = C3D(n_classes=487)
+#         state_dict = torch.load(pt_file, map_location="cpu")
+#         self.C3D.load_state_dict(state_dict)
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         """
+#         x.shape: (B, C, S, H, W), H=W=112 
+#         """
+#         B, C, S, H, W = x.shape
+
+#         pad_size = max(0, self.clip_size - S)
+#         x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
+#         S = x.shape[2]
+
+#         x_unfolded = x.unfold(2, self.clip_size, self.stride)
+#         x_clips = x_unfolded.permute(0, 2, 1, 5, 3, 4)
+#         num_clips = x_clips.shape[1]
+
+#         h = x_clips.reshape(-1, C, self.clip_size, H, W)
+
+#         h = self.C3D.extract(h, layer="fc6")
+        
+#         h = F.normalize(h, p=2, dim=-1)
+
+#         h = h.reshape(B, num_clips, -1)
+#         h = h.mean(dim=1)
+
+#         return h
 
 def _probe_segment_length(video_path: str, target_fps: int, patch_size: int):
 
@@ -173,8 +220,8 @@ def extract_C3D_features(extractor,
                 f.write(f"{vp}\t{reason}\n")
         print(f"\nNumber of {len(skipped)} videos skipped due to VRAM -> {skip_log_path}")
 
-# if __name__ == "__main__":
-#     data = torch.randn(4, 3, 54, 112, 112).to("cuda")
-#     model = C3D_FeatureExtractor("c3d.pickle", clip_size=16, overlap=8).to("cuda")
-#     output = model(data)
-#     print(output.shape)
+if __name__ == "__main__":
+    data = torch.randn(1, 3, 54, 112, 112).to("cuda")
+    model = C3D_FeatureExtractor().to("cuda")
+    output = model(data)
+    print(output.shape)
