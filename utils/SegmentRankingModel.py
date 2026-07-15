@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from tqdm import tqdm
 from .video_preprocess import fetch_video_patches, get_report_dir
-from .visualition_tools import plot_anomaly_timeline
+from .visualization_tools import plot_anomaly_timeline
 
 class SegmentRankingModel(nn.Module):
     def __init__(self, input_dim=512):
@@ -57,17 +57,20 @@ class SegmentRankingModel(nn.Module):
             padding_sec(float): Segmentation padding before and after abnormal event
         """ 
         
-        scores = self.forward(patch_feats).cpu().squeeze(-1)
-        scores = scores.unsqueeze(0).unsqueeze(0)
+        scores_org = self.forward(patch_feats).squeeze(-1) # [32]
+        scores_org = scores_org.unsqueeze(0).unsqueeze(0)  # [1,1,32]
         
         kernel_size = 21
-        scores = F.interpolate(scores, size=1000, mode='linear', align_corners=True)
-        scores = F.pad(scores, (kernel_size // 2, kernel_size // 2), mode='reflect')
-        scores = F.avg_pool1d(scores, kernel_size=kernel_size, stride=1)
-        scores = scores.squeeze(0).squeeze(0)
+        scores_linear_interpolate  = F.interpolate(scores_org, size=1000, mode='linear', align_corners=True)
+        scores_nearest_interpolate = F.interpolate(scores_org, size=1000, mode='nearest')
+        scores_linear_interpolate  = F.pad(scores_linear_interpolate, (kernel_size // 2, kernel_size // 2), mode='reflect')
+        scores_linear_interpolate  = F.avg_pool1d(scores_linear_interpolate, kernel_size=kernel_size, stride=1)
+        
+        scores_linear_interpolate  = scores_linear_interpolate.squeeze(0).squeeze(0)
+        scores_nearest_interpolate = scores_nearest_interpolate.squeeze(0).squeeze(0)
         
         dt = video_seconds / 1000
-        anomaly_indices = torch.where(scores >= threshold)[0].tolist()
+        anomaly_indices = torch.where(scores_linear_interpolate >= threshold)[0].tolist()
         
         final_segments = []
         
@@ -103,7 +106,8 @@ class SegmentRankingModel(nn.Module):
         if plot_graph:
             save_root = get_report_dir(save_file_name)
             os.makedirs(save_root, exist_ok=True)
-            plot_anomaly_timeline(scores,
+            plot_anomaly_timeline(scores_linear_interpolate.cpu(),
+                                  scores_nearest_interpolate.cpu(),
                                   final_segments,
                                   video_seconds,
                                   threshold,

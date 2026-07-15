@@ -65,11 +65,6 @@ class FeatureExtractor(nn.Module):
         batch_size = max(1, int(safe_vram_bytes // bytes_per_segment))
 
         patches = [patch for patch in fetch_video_patches(video_path, fps, patch_size, resolution)]
-        
-        total_step = patch_size // batch_size
-        if patch_size % batch_size != 0:
-            total_step += 1
-        
 
         feats = []
 
@@ -83,7 +78,7 @@ class FeatureExtractor(nn.Module):
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     feat = self.forward(batch)
 
-                feats.append(feat.detach().cpu().float())
+                feats.append(feat.detach().float())
                 pbar.update(end_idx-start_idx)
 
                 del batch, feat
