@@ -1,16 +1,17 @@
-import os
 import random
-import cv2
-import torch
+import torch, os
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
-from .video_preprocess import fetch_video_patches
 
-class MILRankingNetwork(nn.Module):
-    def __init__(self, input_dim=4096):
-        super(MILRankingNetwork, self).__init__()
+
+from tqdm import tqdm
+from .video_preprocess import fetch_video_patches, get_report_dir
+from .visualition_tools import plot_anomaly_timeline
+
+class SegmentRankingModel(nn.Module):
+    def __init__(self, input_dim=512):
+        super(SegmentRankingModel, self).__init__()
         self.fc1 = nn.Linear(input_dim, 512)
         self.fc2 = nn.Linear(512, 32)
         self.fc3 = nn.Linear(32, 1)
@@ -19,14 +20,99 @@ class MILRankingNetwork(nn.Module):
         self.dropout = nn.Dropout(p=0.5)
 
     def forward(self, x):
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.fc3(x)
-        x = self.sigmoid(x)
-        return x.squeeze(-1)
+        x = self.fc1.forward(x)
+        x = self.relu.forward(x)
+        x = self.dropout.forward(x)
+        x = self.fc2.forward(x)
+        x = self.relu.forward(x)
+        x = self.dropout.forward(x)
+        x = self.fc3.forward(x)
+        x = self.sigmoid.forward(x)
+        return x
+    
+    @torch.no_grad()
+    def score_to_segments(self, 
+                   patch_feats:torch.Tensor, 
+                   video_seconds:float, 
+                   threshold:float=0.3, 
+                   tolerance_sec:float=3.0, 
+                   padding_sec:float=3.0,
+                   plot_graph:bool=False,
+                   save_file_name: str = "anomaly_segmentation_plot.png"
+                   ):
+        """
+        VideoFeatureExtractor çıktısı olan özellik vektörlerini alarak
+        bu özellik vektörlerini skorlar ve skorlara göre anormal kısımların segmetasyonu yapılır.
+
+        Segmentasyon yapılırken `threshold` değerinin altındaki tüm patch'ler anormal olmayan patch'lar
+        olarak nitelendirilirken iki anormal segment arası `tolerance_sec` saniyeden daha az bir süre var ise
+        anormal segmentasyonlar birleştirilier. Her anormal segmnetsayon öncesi ve sonrası `padding_sec` kadar video
+        saniye segmentasyona dahil edilir.
+
+        Args:
+            patch_feats (torch.Tensor): Extracted features for each patch from FeatrueExtractor model
+            video_seconds (int): Number of seconds which extracted video from
+            threshold (float): Abnormal event threshold
+            tolerance_sec (float): A tolerance to segmentate Abnormal event from normal event
+            padding_sec(float): Segmentation padding before and after abnormal event
+        """ 
+        
+        scores = self.forward(patch_feats).cpu().squeeze(-1)
+        scores = scores.unsqueeze(0).unsqueeze(0)
+        
+        kernel_size = 21
+        scores = F.interpolate(scores, size=1000, mode='linear', align_corners=True)
+        scores = F.pad(scores, (kernel_size // 2, kernel_size // 2), mode='reflect')
+        scores = F.avg_pool1d(scores, kernel_size=kernel_size, stride=1)
+        scores = scores.squeeze(0).squeeze(0)
+        
+        dt = video_seconds / 1000
+        anomaly_indices = torch.where(scores >= threshold)[0].tolist()
+        
+        final_segments = []
+        
+        if anomaly_indices:
+            raw_segments = []
+            current_start = anomaly_indices[0]
+            current_end = anomaly_indices[0]
+
+            for idx in anomaly_indices[1:]:
+                time_gap = (idx - current_end) * dt
+
+                if time_gap <= tolerance_sec:
+                    current_end = idx
+                else:
+                    raw_segments.append((current_start, current_end))
+                    current_start = idx
+                    current_end = idx
+
+            raw_segments.append((current_start, current_end))
+            
+            for start_idx, end_idx in raw_segments:
+                start_time = start_idx * dt
+                end_time = min(video_seconds, end_idx * dt + padding_sec)
+
+                padded_start = max(0.0, start_time - padding_sec)
+
+                final_segments.append({
+                    "start_time": round(padded_start, 2),
+                    "end_time": round(end_time, 2),
+                    "duration": round(end_time - padded_start, 2)
+                })
+
+        if plot_graph:
+            save_root = get_report_dir(save_file_name)
+            os.makedirs(save_root, exist_ok=True)
+            plot_anomaly_timeline(scores,
+                                  final_segments,
+                                  video_seconds,
+                                  threshold,
+                                  os.path.join(save_root, "abnormal_segments_graph.png"))
+
+        return final_segments
+    
+
+
     
 class VideoSegmenterLoss(nn.Module):
     def __init__(self, lambda_1=0, lambda_2=0):
@@ -53,16 +139,20 @@ class VideoSegmenterLoss(nn.Module):
         
         return mean_hinge + mean_smoothness + mean_sparsity
 
-def MIL_network_trainer(model: MILRankingNetwork, 
+def segment_score_model_trainer(model: SegmentRankingModel, 
                         anormal_feat_dir: str, 
                         normal_feat_dir: str, 
                         epochs: int=10, 
                         learning_rate: float=0.001,
                         test_ratio:int=0.2,
-                        batch_size: int=16):
+                        batch_size: int=16,
+                        pt_save_dir = "segmentation_model_checkpoint"):
 
     anormal_files = [os.path.join(anormal_feat_dir, f) for f in os.listdir(anormal_feat_dir) if f.endswith('.pt')]
     normal_files = [os.path.join(normal_feat_dir, f) for f in os.listdir(normal_feat_dir) if f.endswith('.pt')]
+
+    random.shuffle(anormal_files)
+    random.shuffle(normal_files)
 
     anormal_test_files = anormal_files[0:int(len(anormal_files)*test_ratio)]
     normal_test_files = normal_files[0:int(len(normal_files)*test_ratio)]
@@ -70,15 +160,21 @@ def MIL_network_trainer(model: MILRankingNetwork,
     anormal_train_files = anormal_files[len(anormal_test_files):]
     normal_train_files = normal_files[len(normal_test_files):]
 
-
-    model = model.train(True)
     criterion = VideoSegmenterLoss(lambda_1=8e-5, lambda_2=8e-5)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs*(len(anormal_train_files) + batch_size - 1) // batch_size, eta_min=0.0005)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        epochs*(len(anormal_train_files) + batch_size - 1) // batch_size, 
+        eta_min=0.00005
+    )
 
-    best_loss = float("inf")
+    best_loss    = float("inf")
+    train_losses = []
+    val_losses   = []
 
     for epoch_idx in range(epochs):
+        model.train()
+
         random.shuffle(anormal_files)
 
         epoch_loss = 0.0
@@ -98,17 +194,19 @@ def MIL_network_trainer(model: MILRankingNetwork,
             y_anomaly = model.forward(feat_anomaly) # [B, 32]
             y_normal = model.forward(feat_normal)   # [B, 32]
         
-            loss = criterion.forward(y_anomaly, y_normal)
+            train_loss = criterion.forward(y_anomaly, y_normal)
             
-            loss.backward()
+            train_loss.backward()
             optimizer.step()
             scheduler.step()
 
-            epoch_loss += loss.item()
-            
-            progress_percent = ((i + 1) / num_batches) * 100
-            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Loss: {loss.item():.6f}", end="\r")
+            epoch_loss += train_loss.item()
+            train_losses.append(train_loss.item())
 
+            progress_percent = ((i + 1) / num_batches) * 100
+            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Loss: {train_loss.item():.6f}", end="\r")
+
+        model.eval()
         with torch.no_grad():
 
             normal_batch_files = random.choices(normal_test_files, k=len(anormal_test_files))
@@ -119,12 +217,22 @@ def MIL_network_trainer(model: MILRankingNetwork,
             y_anomaly = model.forward(feat_anomaly) # [B, 32]
             y_normal = model.forward(feat_normal)   # [B, 32]
             val_loss = criterion.forward(y_anomaly, y_normal).item()
+            val_losses.append(val_loss)
         
         new_best_loss = val_loss < best_loss
         print(f"Epoch {epoch_idx+1:03d}/{epochs} - LR: {optimizer.param_groups[0]['lr']:.6f}- Avg. Loss: {epoch_loss/num_batches:.6f} - Val. Loss: {val_loss:.6f} {'*' if new_best_loss else ''}", end="\n")
         
+        os.makedirs(pt_save_dir, exist_ok=True)
+
+        checkpoint = {
+            "validation_loss": val_loss,
+            "state_dict": model.state_dict(),
+            "train_losses": train_losses,
+            "val_losses": val_losses
+        }
+
         if new_best_loss:
             best_loss = val_loss
-            torch.save(model.state_dict(), "best.pt")
+            torch.save(checkpoint, f"{pt_save_dir}/best_loss.pt")
 
-        torch.save(model.state_dict(), "last.pt")
+        torch.save(checkpoint, f"{pt_save_dir}/last.pt")
