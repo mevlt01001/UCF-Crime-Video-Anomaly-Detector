@@ -8,7 +8,7 @@ from .video_preprocess import fetch_video_patches
 from torchvision.models.video import r2plus1d_18, R2Plus1D_18_Weights
 
 class FeatureExtractor(nn.Module):
-    def __init__(self, clip_size: int = 16, overlap: int = 0):
+    def __init__(self, clip_size: int = 16, overlap: int = 0, max_frames: int = 9000):
         super(FeatureExtractor, self).__init__()
         self.clip_size = clip_size
         self.overlap = overlap
@@ -18,24 +18,30 @@ class FeatureExtractor(nn.Module):
         self.backbone = r2plus1d_18(weights=weights)
         self.backbone.fc = nn.Identity()
 
+        max_clips = (max_frames - clip_size) // self.stride + 1
+        self.indices = torch.zeros(max_clips, clip_size, dtype=torch.long)
+        for i in range(max_clips):
+            self.indices[i] = torch.arange(i * self.stride, i * self.stride + clip_size)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         B, C, S, H, W = x.shape
 
-        pad_size = max(0, self.clip_size - S)
-        if pad_size > 0:
-            x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
-            S = x.shape[2]
+        num_clips = (S - self.clip_size) // self.stride + 1
+        
+        valid_indices = self.indices[:num_clips] 
+        flat_indices = valid_indices.flatten()
 
-        x_unfolded = x.unfold(2, self.clip_size, self.stride)
-        x_clips = x_unfolded.permute(0, 2, 1, 5, 3, 4)
-        num_clips = x_clips.shape[1]
+        x_clips = x.index_select(dim=2, index=flat_indices.to(x.device)) 
+        
+        x_clips = x_clips.view(B, C, num_clips, self.clip_size, H, W)
+        x_clips = x_clips.permute(0, 2, 1, 3, 4, 5) 
 
-        h = x_clips.reshape(-1, C, self.clip_size, H, W)    # [B, 3, S, H, W]
+        h = x_clips.reshape(-1, C, self.clip_size, H, W)    
         h = self.backbone(h)
         h = F.normalize(h, p=2, dim=-1)
         h = h.reshape(B, num_clips, -1)
-        h = h.mean(dim=1)   # [B, 512]
+        h = h.mean(dim=1)  
 
         return h
     
@@ -192,6 +198,10 @@ def extract_C3D_features(extractor,
             mini_batch = torch.cat(mini_batch_buffer, dim=0)  # (b, 3, S, H, W) uint8
             mini_batch_buffer.clear()
 
+            if mini_batch.shape[2] < clip_size:
+                pad_size = clip_size - mini_batch.shape[2]
+                mini_batch = F.pad(mini_batch, (0, 0, 0, 0, 0, pad_size))
+
             mini_batch = mini_batch.to("cuda", non_blocking=True)
             mini_batch = mini_batch.float().div_(255.0)
 
@@ -228,7 +238,8 @@ def extract_C3D_features(extractor,
         print(f"\nNumber of {len(skipped)} videos skipped due to VRAM -> {skip_log_path}")
 
 if __name__ == "__main__":
-    data = torch.randn(1, 3, 54, 112, 112).to("cuda")
-    model = FeatureExtractor().to("cuda")
-    output = model(data)
-    print(output.shape)
+    torch.cuda.empty_cache()
+
+    model = FeatureExtractor().eval().to("cuda")
+    videos = [os.path.join("videos",name) for name in os.listdir("videos")]
+    extract_C3D_features(model, videos, "saçma1", 32, 1, (140,140), 20, 3)

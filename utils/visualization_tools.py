@@ -37,4 +37,4 @@ def plot_anomaly_timeline(scores, # [1000]
     
     if save_path:
         plt.savefig(save_path)
-    plt.show()
+    plt.close()
