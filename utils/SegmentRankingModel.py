@@ -4,8 +4,8 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 from tqdm import tqdm
+from datetime import datetime
 from .video_preprocess import fetch_video_patches, get_report_dir
 from .visualization_tools import plot_anomaly_timeline
 
@@ -13,20 +13,26 @@ class SegmentRankingModel(nn.Module):
     def __init__(self, input_dim=512):
         super(SegmentRankingModel, self).__init__()
         self.fc1 = nn.Linear(input_dim, 512)
-        self.fc2 = nn.Linear(512, 32)
-        self.fc3 = nn.Linear(32, 1)
-        self.relu = nn.LeakyReLU()
+        self.fc2 = nn.Linear(512, 128)
+        self.fc3 = nn.Linear(128, 32)
+        self.fc4 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
-        self.dropout = nn.Dropout(p=0.5)
+        self.dropout = nn.Dropout(p=0.6)
 
     def forward(self, x):
         x = self.fc1.forward(x)
-        x = self.relu.forward(x)
+        
         x = self.dropout.forward(x)
+
         x = self.fc2.forward(x)
+        x = self.dropout.forward(x)
+
+        x = self.fc3.forward(x)
         x = self.relu.forward(x)
         x = self.dropout.forward(x)
-        x = self.fc3.forward(x)
+
+        x = self.fc4.forward(x)
         x = self.sigmoid.forward(x)
         return x
     
@@ -143,12 +149,12 @@ class VideoSegmenterLoss(nn.Module):
         
         return mean_hinge + mean_smoothness + mean_sparsity
 
-def segment_score_model_trainer(model: SegmentRankingModel, 
+def segment_score_model_trainer(model: SegmentRankingModel,
                         anormal_feat_dir: str, 
                         normal_feat_dir: str, 
                         epochs: int=10, 
                         learning_rate: float=0.001,
-                        test_ratio:int=0.2,
+                        test_ratio: float=0.2,
                         batch_size: int=16,
                         pt_save_dir = "segmentation_model_checkpoint"):
 
@@ -158,17 +164,27 @@ def segment_score_model_trainer(model: SegmentRankingModel,
     random.shuffle(anormal_files)
     random.shuffle(normal_files)
 
-    anormal_test_files = anormal_files[0:int(len(anormal_files)*test_ratio)]
-    normal_test_files = normal_files[0:int(len(normal_files)*test_ratio)]
+    num_anormal_test = int(len(anormal_files) * test_ratio)
+    anormal_test_files = anormal_files[:num_anormal_test]
+    anormal_train_files = anormal_files[num_anormal_test:]
 
-    anormal_train_files = anormal_files[len(anormal_test_files):]
-    normal_train_files = normal_files[len(normal_test_files):]
+    num_normal_test = int(len(normal_files) * test_ratio)
+    normal_test_files = normal_files[:num_normal_test]
+    normal_train_files = normal_files[num_normal_test:]
 
-    criterion = VideoSegmenterLoss(lambda_1=8e-5, lambda_2=8e-5)
+    if len(normal_test_files) >= len(anormal_test_files):
+        static_val_normal_files = random.sample(normal_test_files, k=len(anormal_test_files))
+    else:
+        static_val_normal_files = random.choices(normal_test_files, k=len(anormal_test_files))
+
+    criterion = VideoSegmenterLoss(lambda_1=1e-4, lambda_2=1e-4)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.001)
+    
+    num_batches = (len(anormal_train_files) + batch_size - 1) // batch_size
+    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
-        epochs*(len(anormal_train_files) + batch_size - 1) // batch_size, 
+        epochs * num_batches, 
         eta_min=0.00005
     )
 
@@ -179,10 +195,9 @@ def segment_score_model_trainer(model: SegmentRankingModel,
     for epoch_idx in range(epochs):
         model.train()
 
-        random.shuffle(anormal_files)
+        random.shuffle(anormal_train_files)
 
         epoch_loss = 0.0
-        num_batches = (len(anormal_train_files) + batch_size - 1) // batch_size
 
         for i in range(num_batches):
             optimizer.zero_grad()
@@ -190,7 +205,7 @@ def segment_score_model_trainer(model: SegmentRankingModel,
             anormal_batch_files = anormal_train_files[i * batch_size : (i + 1) * batch_size]
             current_b_size = len(anormal_batch_files)
 
-            normal_batch_files = random.choices(normal_train_files, k=current_b_size)
+            normal_batch_files = random.sample(normal_train_files, k=current_b_size)
 
             feat_anomaly = torch.stack([torch.load(f) for f in anormal_batch_files]).to("cuda")
             feat_normal = torch.stack([torch.load(f) for f in normal_batch_files]).to("cuda")
@@ -201,6 +216,7 @@ def segment_score_model_trainer(model: SegmentRankingModel,
             train_loss = criterion.forward(y_anomaly, y_normal)
             
             train_loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             optimizer.step()
             scheduler.step()
 
@@ -208,23 +224,25 @@ def segment_score_model_trainer(model: SegmentRankingModel,
             train_losses.append(train_loss.item())
 
             progress_percent = ((i + 1) / num_batches) * 100
-            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Loss: {train_loss.item():.6f}", end="\r")
+            print(f"Epoch {epoch_idx+1:03d}/{epochs} - Progress: %{progress_percent:5.3f} - Grad Norm: {grad_norm.item():6.3f} - Loss: {train_loss.item():.6f}", end="\r")
 
         model.eval()
         with torch.no_grad():
-
-            normal_batch_files = random.choices(normal_test_files, k=len(anormal_test_files))
-
             feat_anomaly = torch.stack([torch.load(f) for f in anormal_test_files]).to("cuda")
-            feat_normal = torch.stack([torch.load(f) for f in normal_batch_files]).to("cuda")
+            feat_normal = torch.stack([torch.load(f) for f in static_val_normal_files]).to("cuda")
             
             y_anomaly = model.forward(feat_anomaly) # [B, 32]
             y_normal = model.forward(feat_normal)   # [B, 32]
             val_loss = criterion.forward(y_anomaly, y_normal).item()
             val_losses.append(val_loss)
         
-        new_best_loss = val_loss < best_loss
-        print(f"Epoch {epoch_idx+1:03d}/{epochs} - LR: {optimizer.param_groups[0]['lr']:.6f}- Avg. Loss: {epoch_loss/num_batches:.6f} - Val. Loss: {val_loss:.6f} {'*' if new_best_loss else ''}", end="\n")
+        new_best_loss = val_loss < best_loss 
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+              f"Epoch {epoch_idx+1:03d}/{epochs} - "
+              f"LR: {optimizer.param_groups[0]['lr']:.6f} - "
+              f"Avg. Loss: {epoch_loss/num_batches:.6f} - "
+              f"Val. Loss: {val_loss:.6f} {'*' if new_best_loss else ''}", 
+              end="\n")
         
         os.makedirs(pt_save_dir, exist_ok=True)
 
