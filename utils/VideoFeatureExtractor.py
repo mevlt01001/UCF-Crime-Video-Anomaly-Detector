@@ -121,7 +121,9 @@ def extract_feats(extractor:FeatureExtractor,
             target_frames = int(frames_temp * ratio)
             
             frame_per_segment = max(1, target_frames // len_segments)
-            dummy = torch.rand(1, 3, max(extractor.clip_size, int(frame_per_segment)), *crop_dim)
+            core_model = extractor.module if is_dp else extractor
+            clip_size = core_model.clip_size
+            dummy = torch.rand(1, 3, max(clip_size, int(frame_per_segment)), *crop_dim)
             vram_usage_mb = calc_vram_usage_in_mb(extractor, dummy)
             vram_usage_mb = max(10.0, vram_usage_mb)
             if vram_usage_mb > safe_vram_mb:
