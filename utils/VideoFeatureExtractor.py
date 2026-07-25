@@ -34,12 +34,11 @@ class FeatureExtractor(nn.Module):
 
         x_clips = x.index_select(dim=2, index=flat_indices.to(x.device)) 
         
-        x_clips = x_clips.view(B, C, num_clips, self.clip_size, H, W)
-        x_clips = x_clips.permute(0, 2, 1, 3, 4, 5) 
+        x_clips = x_clips.view(B, C, num_clips, self.clip_size, H, W) # [B, C, S, ClipSize, H, W]
+        x_clips = x_clips.permute(0, 2, 1, 3, 4, 5) # [B, S, C, ClipSize, H, W]
 
-        h = x_clips.reshape(-1, C, self.clip_size, H, W)    
-        h = self.backbone(h)
-        h = F.normalize(h, p=2, dim=-1)
+        h = x_clips.reshape(-1, C, self.clip_size, H, W) # [B*S, C, ClipSize, H, W]
+        h = self.backbone(h) # [B*S, Dim]
         h = h.reshape(B, num_clips, -1)
         h = h.mean(dim=1)  
 
@@ -66,7 +65,7 @@ def calc_vram_usage_in_mb(model: nn.Module, tensor: torch.Tensor) -> float:
 
 
 @torch.no_grad()
-def extract_C3D_features(extractor,
+def extract_feats(extractor,
                           video_paths: list,
                           save_dir: str,
                           patch_size: int = 32, # base_patch_size
