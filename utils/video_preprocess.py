@@ -60,14 +60,14 @@ def save_segment_clips(video_path: str,
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fourcc       = cv2.VideoWriter_fourcc(*"mp4v")
 
-    clip_names = []
+    clip_paths = []
 
     for idx, segment in enumerate(segments, start=1):
         start_frame = max(0, int(segment["start_time"] * fps))
         end_frame   = min(max(0, total_frames - 1), int(segment["end_time"] * fps))
 
         clip_name = f"{prefix}_{idx:02d}.mp4"
-        clip_path = os.path.join(save_dir, clip_name)
+        clip_path = os.path.join(os.getcwd(), save_dir, clip_name)
 
         writer = cv2.VideoWriter(clip_path, fourcc, fps, (width, height))
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -83,14 +83,14 @@ def save_segment_clips(video_path: str,
         writer.release()
 
         if wrote_any_frame:
-            clip_names.append(clip_name)
+            clip_paths.append(clip_path)
         else:
             if os.path.exists(clip_path):
                 os.remove(clip_path)
-            clip_names.append(None)
+            clip_paths.append(None)
 
     cap.release()
-    return clip_names
+    return clip_paths
 
 
 def get_video_lenght(video_path: str):
@@ -111,7 +111,9 @@ def fetch_video_patches(video_path: str,
                         target_fps: int = 30, 
                         patch_size: int = 32, 
                         resize_dim: tuple = (112, 112),
-                        clip_size: int = 16):
+                        crop_dim: tuple = (112, 112),
+                        clip_size: int = 16,
+                        max_sec:float=241.5):
     
     cap = cv2.VideoCapture(video_path)
 
@@ -123,6 +125,10 @@ def fetch_video_patches(video_path: str,
 
     original_number_of_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     target_number_of_frames = int(original_number_of_frames * ratio)
+
+    duration = original_number_of_frames / original_fps
+    patch_size_K = max(1, duration / max_sec)
+    patch_size = int(patch_size*patch_size_K)
 
     number_of_patch_elements = max(1, target_number_of_frames // patch_size)
     clean_target_frames = number_of_patch_elements * patch_size
@@ -151,6 +157,14 @@ def fetch_video_patches(video_path: str,
         processed_frame = last_frame.copy()
         if resize_dim: 
             processed_frame = cv2.resize(processed_frame, resize_dim)
+        if crop_dim:
+            h, w = processed_frame.shape[:2]
+            crop_h, crop_w = crop_dim
+            
+            start_x = (w - crop_w) // 2
+            start_y = (h - crop_h) // 2
+            
+            processed_frame = processed_frame[start_y:start_y+crop_h, start_x:start_x+crop_w]
             
         processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
         frames.append(processed_frame)    
@@ -179,24 +193,33 @@ def generate_frames(video_path: os.PathLike,
                     start_sec: float, 
                     end_sec: float, 
                     all_video: bool = False, 
-                    frame_length: int = 16):
+                    FPS: float = 5,
+                    max_frames: int = 32):
 
-    vr = VideoReader(video_path, ctx=cpu(0), width=320, height=240)
+    vr = VideoReader(video_path, ctx=cpu(0), width=448, height=336)
 
     total_frames = len(vr)
-    total_sec    = total_frames / vr.get_avg_fps()
+    video_fps = vr.get_avg_fps()
+    total_sec = total_frames / video_fps
+    
+    if all_video:
+        start_sec = 0.0
+        end_sec = total_sec
     
     start_frame_idx = max(0, int((start_sec / total_sec) * total_frames))
-    end_frame_idx   = min(total_frames - 1, int((end_sec / total_sec) * total_frames)) if not all_video else total_frames - 1
+    end_frame_idx   = min(total_frames - 1, int((end_sec / total_sec) * total_frames))
     
+    duration = end_sec - start_sec
+    calculated_frames = int(duration * FPS)
+    
+    frame_length = max(1, min(max_frames, calculated_frames))
     frames_ids = np.linspace(start_frame_idx, 
-                                end_frame_idx, 
-                                frame_length, 
-                                dtype=int)
+                             end_frame_idx, 
+                             frame_length, 
+                             dtype=int)
     
-    start_sec = total_sec*(start_frame_idx/total_frames)
-    end_sec = total_sec*(end_frame_idx/total_frames)
-    
+    actual_start_sec = frames_ids[0] / video_fps
+    actual_end_sec = frames_ids[-1] / video_fps
     frames = vr.get_batch(frames_ids).asnumpy()
     
-    return frames, start_sec, end_sec
+    return frames, actual_start_sec, actual_end_sec
