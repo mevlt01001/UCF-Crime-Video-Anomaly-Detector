@@ -1,3 +1,4 @@
+import gc
 import os
 import cv2
 from tqdm import tqdm
@@ -65,16 +66,16 @@ def calc_vram_usage_in_mb(model: nn.Module, tensor: torch.Tensor) -> float:
 
 
 @torch.no_grad()
-def extract_feats(extractor,
-                          video_paths: list,
-                          save_dir: str,
-                          patch_size: int = 32, # base_patch_size
-                          resize_dim: tuple = (112, 112),
-                          crop_dim: tuple = (112, 112),
-                          target_fps: int = 30,
-                          max_sec: float = 241.5,
-                          safe_vram_mb: float = 3200.0,
-                          skip_log_path: str = None):
+def extract_feats(extractor:FeatureExtractor,
+                  video_paths: list,
+                  save_dir: str,
+                  patch_size: int = 32, # base_patch_size
+                  resize_dim: tuple = (112, 112),
+                  crop_dim: tuple = (112, 112),
+                  target_fps: int = 30,
+                  max_sec: float = 241.5,
+                  safe_vram_mb: float = 3200.0,
+                  skip_log_path: str = None):
 
     os.makedirs(save_dir, exist_ok=True)
     if skip_log_path is None:
@@ -120,9 +121,9 @@ def extract_feats(extractor,
             target_frames = int(frames_temp * ratio)
             
             frame_per_segment = max(1, target_frames // len_segments)
-            dummy = torch.rand(1, 3, int(frame_per_segment), *crop_dim)
+            dummy = torch.rand(1, 3, max(extractor.clip_size, int(frame_per_segment)), *crop_dim)
             vram_usage_mb = calc_vram_usage_in_mb(extractor, dummy)
-            
+            vram_usage_mb = max(10.0, vram_usage_mb)
             if vram_usage_mb > safe_vram_mb:
                 raise MemoryError(f"Only 1 segment wasting {vram_usage_mb:.2f} MB VRAM. (Limit: {safe_vram_mb} MB)")
             
@@ -154,8 +155,11 @@ def extract_feats(extractor,
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                         feats = extractor(batch)  
 
-                    video_features.append(feats.cpu()) 
+                    video_features.append(feats.detach().cpu().clone())
                     batch_buffer.clear()
+
+                    del batch, feats
+                    torch.cuda.empty_cache()
 
                 progress_pct = ((segment_idx + 1) / len_segments) * 100
                 info = (
@@ -170,6 +174,9 @@ def extract_feats(extractor,
 
             video_feature = torch.cat(video_features, dim=0)  
             torch.save(video_feature, save_path)
+
+            del video_feature, video_features, segment_generator
+            gc.collect()
             
         except Exception as e:
             with open(skip_log_path, "a") as f:

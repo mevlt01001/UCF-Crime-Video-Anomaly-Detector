@@ -1,3 +1,4 @@
+import gc
 import os
 import cv2
 import torch
@@ -148,6 +149,9 @@ def fetch_video_patches(video_path: str,
             
         batch_tensor = process_patch_fast(frames, clip_size)
         yield batch_tensor
+
+    del vr, frames
+    gc.collect()
 
 def process_patch_fast(frames_array, clip_size=16):
     
