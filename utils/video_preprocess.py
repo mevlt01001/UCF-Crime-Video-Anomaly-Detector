@@ -113,72 +113,45 @@ def fetch_video_patches(video_path: str,
                         resize_dim: tuple = (112, 112),
                         crop_dim: tuple = (112, 112),
                         clip_size: int = 16,
-                        max_sec:float=241.5):
+                        max_sec: float = 241.5):
     
-    cap = cv2.VideoCapture(video_path)
-
-    if not cap.isOpened():
-        raise ValueError(f"Error opening video: {video_path}")
+    vr = VideoReader(video_path, ctx=cpu(0), width=resize_dim[0], height=resize_dim[1])
     
-    original_fps = cap.get(cv2.CAP_PROP_FPS)
-    ratio = target_fps / original_fps
-
-    original_number_of_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    original_fps = vr.get_avg_fps()
+    original_number_of_frames = len(vr)
+    
+    ratio = target_fps / original_fps if original_fps > 0 else 1.0
     target_number_of_frames = int(original_number_of_frames * ratio)
 
-    duration = original_number_of_frames / original_fps
-    patch_size_K = max(1, duration / max_sec)
-    patch_size = int(patch_size*patch_size_K)
+    duration = original_number_of_frames / original_fps if original_fps > 0 else 0
+    patch_size_K = max(1.0, duration / max_sec)
+    dynamic_patch_size = int(patch_size * patch_size_K)
 
-    number_of_patch_elements = max(1, target_number_of_frames // patch_size)
-    clean_target_frames = number_of_patch_elements * patch_size
+    number_of_patch_elements = max(1, target_number_of_frames // dynamic_patch_size)
+    clean_target_frames = number_of_patch_elements * dynamic_patch_size
     
-    frames = []
-    current_orig_idx = -1
-    last_frame = None
+    target_indices = np.arange(clean_target_frames)
+    needed_orig_indices = (target_indices / ratio).astype(int)
+    needed_orig_indices = np.clip(needed_orig_indices, 0, original_number_of_frames - 1)
 
-    for target_idx in range(clean_target_frames):
-        needed_orig_idx = int(target_idx / ratio)
-
-        while current_orig_idx < needed_orig_idx - 1:
-            if not cap.grab():
-                break
-            current_orig_idx += 1
-
-        if current_orig_idx < needed_orig_idx:
-            ret, frame = cap.read()
-            if ret:
-                current_orig_idx += 1
-                last_frame = frame
-
-        if last_frame is None:
-            break
-            
-        processed_frame = last_frame.copy()
-        if resize_dim: 
-            processed_frame = cv2.resize(processed_frame, resize_dim)
-        if crop_dim:
-            h, w = processed_frame.shape[:2]
-            crop_h, crop_w = crop_dim
-            
-            start_x = (w - crop_w) // 2
-            start_y = (h - crop_h) // 2
-            
-            processed_frame = processed_frame[start_y:start_y+crop_h, start_x:start_x+crop_w]
-            
-        processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-        frames.append(processed_frame)    
+    for start_idx in range(0, clean_target_frames, number_of_patch_elements):
         
-        if len(frames) == number_of_patch_elements:
-            batch_tensor = process_patch(frames, clip_size)
-            yield batch_tensor
-            frames = []
+        batch_indices = needed_orig_indices[start_idx : start_idx + number_of_patch_elements]
+        frames = vr.get_batch(batch_indices).asnumpy() 
+        
+        if crop_dim:
+            h, w = frames.shape[1:3]
+            crop_h, crop_w = crop_dim
+            start_y = (h - crop_h) // 2
+            start_x = (w - crop_w) // 2
+            frames = frames[:, start_y:start_y+crop_h, start_x:start_x+crop_w, :]
+            
+        batch_tensor = process_patch_fast(frames, clip_size)
+        yield batch_tensor
 
-    cap.release()
-
-def process_patch(frames_list, clip_size=16):
-    np_frames = np.array(frames_list)  # (T, H, W, 3) uint8
-    tensor = torch.from_numpy(np_frames)  # uint8
+def process_patch_fast(frames_array, clip_size=16):
+    
+    tensor = torch.from_numpy(frames_array)  # uint8
     tensor = tensor.unsqueeze(0)
     tensor = tensor.permute(0, 4, 1, 2, 3).contiguous()  # (1, 3, T, H, W) uint8
     
