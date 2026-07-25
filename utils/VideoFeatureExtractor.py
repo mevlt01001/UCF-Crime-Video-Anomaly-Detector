@@ -45,6 +45,26 @@ class FeatureExtractor(nn.Module):
 
         return h
 
+def calc_vram_usage_in_mb(model: nn.Module, tensor: torch.Tensor) -> float:
+
+    device = "cuda"
+    tensor = tensor.to(device, non_blocking=True)
+    
+    torch.cuda.reset_peak_memory_stats(device)
+    initial_mem = torch.cuda.memory_allocated(device)
+    
+    with torch.no_grad(), torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+        _ = model(tensor)
+        
+    peak_mem = torch.cuda.max_memory_allocated(device)
+    vram_bytes = peak_mem - initial_mem
+    
+    del tensor, _
+    torch.cuda.empty_cache()
+    
+    return vram_bytes / (1024 * 1024)
+
+
 @torch.no_grad()
 def extract_C3D_features(extractor,
                           video_paths: list,
@@ -54,10 +74,9 @@ def extract_C3D_features(extractor,
                           crop_dim: tuple = (112, 112),
                           target_fps: int = 30,
                           max_sec: float = 241.5,
+                          safe_vram_mb: float = 3200.0,
                           skip_log_path: str = None):
-    """
-    Extracts features from given video_paths and saves the features to given save_dir.
-    """
+
     os.makedirs(save_dir, exist_ok=True)
     if skip_log_path is None:
         skip_log_path = os.path.join(save_dir, "skipped_videos.txt")
@@ -98,11 +117,27 @@ def extract_C3D_features(extractor,
             dynamic_patch_size = int(patch_size * patch_size_K)
             len_segments = dynamic_patch_size
 
+            ratio = target_fps / fps_temp if fps_temp > 0 else 1.0
+            target_frames = int(frames_temp * ratio)
+            
+            frame_per_segment = max(1, target_frames // len_segments)
+            dummy = torch.rand(1, 3, int(frame_per_segment), *crop_dim)
+            vram_usage_mb = calc_vram_usage_in_mb(extractor, dummy)
+            
+            if vram_usage_mb > safe_vram_mb:
+                raise MemoryError(f"Only 1 segment wasting {vram_usage_mb:.2f} MB VRAM. (Limit: {safe_vram_mb} MB)")
+            
+            calculated_batch = int(safe_vram_mb // vram_usage_mb)
+            if num_gpus > 1:
+                batch_size = max(num_gpus, (calculated_batch // num_gpus) * num_gpus)
+            else:
+                batch_size = max(1, calculated_batch)
+
             segment_generator = fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, 
                                                     resize_dim=resize_dim, crop_dim=crop_dim, max_sec=max_sec)
             
             if len_segments == 0:
-                raise ValueError("Videodan hic segment cikarilamadi!")
+                raise ValueError("No extracted segment in video")
 
             batch_buffer = []
             for segment_idx, segment in enumerate(segment_generator):
@@ -126,7 +161,8 @@ def extract_C3D_features(extractor,
                 progress_pct = ((segment_idx + 1) / len_segments) * 100
                 info = (
                     f"Video: {video_idx+1:04d}/{len_videos} | "
-                    f"Progress: %{progress_pct:5.2f}"
+                    f"Progress: %{progress_pct:5.2f} | "
+                    f"Batch: {batch_size}"
                 )
                 
                 print(info, end='\r', flush=True)
@@ -139,4 +175,4 @@ def extract_C3D_features(extractor,
         except Exception as e:
             with open(skip_log_path, "a") as f:
                 f.write(f"{vp}\t{e}\n")
-            print(f"\n[HATA] {vp} islenirken hata: {e}", flush=True)
+            print(f"\n[SKIP] {vp} -> {e}", flush=True)
