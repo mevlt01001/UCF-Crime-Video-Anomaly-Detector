@@ -14,10 +14,7 @@ class FeatureExtractor(nn.Module):
         self.clip_size = clip_size
         self.overlap = overlap
         self.stride = clip_size - overlap
-
-        weights = S3D_Weights.DEFAULT
-        self.backbone = s3d(weights=weights)
-        self.backbone.classifier = nn.Identity()
+        self.backbone = None
 
         max_clips = (max_frames - clip_size) // self.stride + 1
         self.indices = torch.zeros(max_clips, clip_size, dtype=torch.long)
