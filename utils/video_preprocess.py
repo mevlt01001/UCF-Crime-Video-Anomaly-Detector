@@ -94,7 +94,7 @@ def save_segment_clips(video_path: str,
     return clip_paths
 
 
-def get_video_lenght(video_path: str):
+def get_video_length(video_path: str):
     cap = cv2.VideoCapture(video_path)
 
     if not cap.isOpened():
@@ -116,7 +116,7 @@ def fetch_video_patches(video_path: str,
                         clip_size: int = 16,
                         max_sec: float = 241.5):
     
-    vr = VideoReader(video_path, ctx=cpu(0), width=resize_dim[0], height=resize_dim[1])
+    vr = VideoReader(video_path, ctx=cpu(0), width=resize_dim[1], height=resize_dim[0])
     
     original_fps = vr.get_avg_fps()
     original_number_of_frames = len(vr)
