@@ -23,6 +23,10 @@ class FeatureExtractor(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
+        if hasattr(self, "trt_engine"):
+            return self.trt_inference(x)
+
+
         B, C, S, H, W = x.shape
 
         num_clips = (S - self.clip_size) // self.stride + 1
@@ -41,6 +45,106 @@ class FeatureExtractor(nn.Module):
         h = h.mean(dim=1)  
 
         return h
+
+    def trt_inference(self, segment:torch.Tensor):
+        segment = segment.contiguous().to(torch.float32)
+        
+        self.trt_context.set_input_shape("input", tuple(segment.shape))
+
+        output_shape = tuple(self.trt_context.get_tensor_shape("output"))
+        output = torch.empty(output_shape, dtype=torch.float32, device=segment.device)
+
+        self.trt_context.set_tensor_address("input", int(segment.data_ptr()))
+        self.trt_context.set_tensor_address("output", int(output.data_ptr()))
+        
+        stream = torch.cuda.current_stream().cuda_stream
+        self.trt_context.execute_async_v3(stream_handle=stream)
+        torch.cuda.synchronize()
+        
+        return output
+
+    def export_onnx(self, filename, imgsz):
+        import onnx, onnxsim
+
+        model_path = filename
+        dummy = torch.rand(1,3,60,*imgsz, device="cpu")
+
+        torch.onnx.export(
+            self.to("cpu"),
+            dummy,
+            model_path,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_shapes = {
+                'x': {0: 'B', 2: 'S'},
+            },
+            opset_version=19,
+            do_constant_folding=True,
+        )
+
+        onnx_model = onnx.load(model_path)
+        onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+        onnx_model, check = onnxsim.simplify(onnx_model, check_n=3, test_input_shapes={"input": [1, 3, 60, *imgsz]})
+        onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+        onnx.save(onnx_model, model_path)
+
+    def export_trt(self, imgsz):
+        import tensorrt as trt
+        TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
+        
+        BUILDER = trt.Builder(TRT_LOGGER)
+        NETWORK = BUILDER.create_network()
+        
+        PARSER = trt.OnnxParser(NETWORK, TRT_LOGGER)
+        
+        CONFIG = BUILDER.create_builder_config()
+        OPT_PROFILE = BUILDER.create_optimization_profile()
+
+        file_name = "Feature_Extractor"
+        onnx_filename = file_name+".onnx"
+        trt_filename = file_name+".plan"
+
+        if(os.path.exists(trt_filename)):
+            self.load_trt(trt_filename, trt.Runtime(TRT_LOGGER))
+            return
+
+        self.export_onnx(onnx_filename, imgsz)
+
+        if not PARSER.parse_from_file(onnx_filename):
+            for error in range(PARSER.num_errors):
+                print(PARSER.get_error(error))
+            raise RuntimeError(f"ONNX Parsing error for model: {onnx_filename}")
+
+
+        
+        min_shape = (1, 3, self.clip_size, imgsz[1], imgsz[0])
+        opt_shape = (1, 3, 30, imgsz[1], imgsz[0])
+        max_shape = (1, 3, 235, imgsz[1], imgsz[0])
+        
+        OPT_PROFILE.set_shape("input", min_shape, opt_shape, max_shape)
+        CONFIG.add_optimization_profile(OPT_PROFILE)
+
+        engine_bytes = BUILDER.build_serialized_network(NETWORK, CONFIG)
+        
+        if engine_bytes is None:
+            raise RuntimeError("TRT Plan generation failed!")
+
+        with open(trt_filename, "wb") as f:
+            f.write(engine_bytes)
+
+        self.load_trt(trt_filename, trt.Runtime(TRT_LOGGER))
+            
+    def load_trt(self, trt_path, runtime):
+        
+        with open(trt_path, 'rb') as f:
+            self.trt_engine = runtime.deserialize_cuda_engine(f.read())
+        self.trt_context = self.trt_engine.create_execution_context()
+
+        if hasattr(self, 'feature_extractor'):
+            del self.feature_extractor
+            del self.segment_ranker
+            torch.cuda.empty_cache()
+
 
 def calc_vram_usage_in_mb(model: nn.Module, tensor: torch.Tensor) -> float:
 
@@ -63,14 +167,13 @@ def calc_vram_usage_in_mb(model: nn.Module, tensor: torch.Tensor) -> float:
 
 
 @torch.no_grad()
-def extract_feats(extractor:FeatureExtractor,
+def extract_feats(extractor: FeatureExtractor,
                   video_paths: list,
                   save_dir: str,
-                  patch_size: int = 32, # base_patch_size
+                  patch_size: int = 32,
                   resize_dim: tuple = (112, 112),
                   crop_dim: tuple = (112, 112),
                   target_fps: int = 30,
-                  max_sec: float = 241.5,
                   safe_vram_mb: float = 3200.0,
                   skip_log_path: str = None):
 
@@ -79,18 +182,19 @@ def extract_feats(extractor:FeatureExtractor,
         skip_log_path = os.path.join(save_dir, "skipped_videos.txt")
 
     num_gpus = torch.cuda.device_count()
-    batch_size = max(1, num_gpus) 
 
-    is_dp = isinstance(extractor, torch.nn.DataParallel)
-    
-    if num_gpus > 1 and not is_dp:
+    extractor.export_trt(crop_dim)
+
+    has_trt = hasattr(extractor, "trt_engine")
+    is_dp = False
+    if num_gpus > 1 and not has_trt:
         extractor = torch.nn.DataParallel(extractor)
         is_dp = True
 
     core_model = extractor.module if is_dp else extractor
     clip_size = core_model.clip_size
 
-    if not is_dp:
+    if not is_dp and not has_trt:
         extractor = extractor.to("cuda")
         
     extractor.eval()
@@ -104,39 +208,17 @@ def extract_feats(extractor:FeatureExtractor,
             continue
 
         try:
-            cap_temp = cv2.VideoCapture(vp)
-            fps_temp = cap_temp.get(cv2.CAP_PROP_FPS)
-            frames_temp = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap_temp.release()
             
-            duration = frames_temp / fps_temp if fps_temp > 0 else 0
-            patch_size_K = max(1.0, duration / max_sec)
-            dynamic_patch_size = int(patch_size * patch_size_K)
-            len_segments = dynamic_patch_size
-
-            ratio = target_fps / fps_temp if fps_temp > 0 else 1.0
-            target_frames = int(frames_temp * ratio)
-            
-            frame_per_segment = max(1, target_frames // len_segments)
-            core_model = extractor.module if is_dp else extractor
-            clip_size = core_model.clip_size
-            dummy = torch.rand(1, 3, max(clip_size, int(frame_per_segment)), *crop_dim)
-            vram_usage_mb = calc_vram_usage_in_mb(extractor, dummy)
-            vram_usage_mb = max(10.0, vram_usage_mb)
-            if vram_usage_mb > safe_vram_mb:
-                raise MemoryError(f"Only 1 segment wasting {vram_usage_mb:.2f} MB VRAM. (Limit: {safe_vram_mb} MB)")
-            
-            calculated_batch = int(safe_vram_mb // vram_usage_mb)
-            if num_gpus > 1:
-                batch_size = max(num_gpus, (calculated_batch // num_gpus) * num_gpus)
-            else:
-                batch_size = max(1, calculated_batch)
-
             segment_generator = fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, 
-                                                    resize_dim=resize_dim, crop_dim=crop_dim, max_sec=max_sec)
+                                                    resize_dim=resize_dim, crop_dim=crop_dim)
             
-            if len_segments == 0:
-                raise ValueError("No extracted segment in video")
+            if has_trt:
+                batch_size = 1
+            else:
+                dummy = torch.rand(1, 3, clip_size, *crop_dim)
+                vram_usage_mb = max(10.0, calc_vram_usage_in_mb(extractor, dummy))
+                calculated_batch = int(safe_vram_mb // vram_usage_mb)
+                batch_size = max(num_gpus, (calculated_batch // num_gpus) * num_gpus) if is_dp else max(1, calculated_batch)
 
             batch_buffer = []
             for segment_idx, segment in enumerate(segment_generator):
@@ -147,8 +229,7 @@ def extract_feats(extractor:FeatureExtractor,
                 
                 batch_buffer.append(segment)
 
-                if len(batch_buffer) == batch_size or segment_idx == len_segments - 1:
-                    
+                if len(batch_buffer) == batch_size or segment_idx == len(segment_generator) - 1:
                     batch = torch.cat(batch_buffer, dim=0).to("cuda", non_blocking=True)
                     
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
@@ -160,14 +241,7 @@ def extract_feats(extractor:FeatureExtractor,
                     del batch, feats
                     torch.cuda.empty_cache()
 
-                progress_pct = ((segment_idx + 1) / len_segments) * 100
-                info = (
-                    f"Video: {video_idx+1:04d}/{len_videos} | "
-                    f"Progress: %{progress_pct:5.2f} | "
-                    f"Batch: {batch_size}"
-                )
-                
-                print(info, end='\r', flush=True)
+                print(f"Video: {video_idx+1:04d}/{len_videos} | Batch: {batch_size} | Segment: {segment_idx+1}", end='\r', flush=True)
 
             print()
 
