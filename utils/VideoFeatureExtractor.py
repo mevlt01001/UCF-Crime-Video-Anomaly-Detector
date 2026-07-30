@@ -176,17 +176,20 @@ def extract_feats(extractor: FeatureExtractor,
                   target_fps: int = 30,
                   safe_vram_mb: float = 3200.0,
                   max_sec: float = 241.5,
+                  use_trt:bool = True,
                   skip_log_path: str = None):
 
+    # Save_dir Control
     os.makedirs(save_dir, exist_ok=True)
     if skip_log_path is None:
         skip_log_path = os.path.join(save_dir, "skipped_videos.txt")
 
+    # Inference Type Specifications
     num_gpus = torch.cuda.device_count()
-
-    extractor.export_trt(crop_dim)
-
+    if use_trt:
+        extractor.export_trt(crop_dim)
     has_trt = hasattr(extractor, "trt_engine")
+
     is_dp = False
     if num_gpus > 1 and not has_trt:
         extractor = torch.nn.DataParallel(extractor)
@@ -200,39 +203,39 @@ def extract_feats(extractor: FeatureExtractor,
         
     extractor.eval()
 
+    # Video by video
     len_videos = len(video_paths)
     for video_idx, vp in enumerate(video_paths):
-        video_features = []
+        video_features = [] # Video segments feats
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
 
+        # To get length of video segmnets
         cap_temp = cv2.VideoCapture(vp)
         fps_temp = cap_temp.get(cv2.CAP_PROP_FPS)
         frames_temp = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap_temp.release()
-        
         duration = frames_temp / fps_temp if fps_temp > 0 else 0
         patch_size_K = max(1.0, duration / max_sec)
         len_segments = int(patch_size * patch_size_K)
+        cap_temp.release()
 
-        if os.path.exists(save_path):
-            continue
-
+        # If occurs an error, it is going to write to `skip_log_path`
         try:
-            
             segment_generator = fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, max_sec=max_sec,
                                                     resize_dim=resize_dim, crop_dim=crop_dim)
-            
+            # TensorRT runs shape [1, 3, S, H, W] (Otherwords Batch must be equal to the 1 (one))
             if has_trt:
                 batch_size = 1
+            # If no trt then batch size will be effective one. :)
             else:
                 dummy = torch.rand(1, 3, clip_size, *crop_dim)
                 vram_usage_mb = max(10.0, calc_vram_usage_in_mb(extractor, dummy))
                 calculated_batch = int(safe_vram_mb // vram_usage_mb)
                 batch_size = max(num_gpus, (calculated_batch // num_gpus) * num_gpus) if is_dp else max(1, calculated_batch)
 
-            batch_buffer = []
+            batch_buffer = [] # holds segments to inference in a batch (sized as `batch_size`)
             for segment_idx, segment in enumerate(segment_generator):
                 segment = segment.float().div_(255.0)
+                # Feature extractor model extrac feats clip-vise, at least segments must have frames as long as `clip_size` (That is why PADDED)
                 if segment.shape[2] < clip_size:
                     pad_size = clip_size - segment.shape[2]
                     segment = F.pad(segment, (0, 0, 0, 0, 0, pad_size))
@@ -255,6 +258,7 @@ def extract_feats(extractor: FeatureExtractor,
 
             print()
 
+            # Save the feats to gain time!!!
             video_feature = torch.cat(video_features, dim=0)  
             torch.save(video_feature, save_path)
 
