@@ -175,6 +175,7 @@ def extract_feats(extractor: FeatureExtractor,
                   crop_dim: tuple = (112, 112),
                   target_fps: int = 30,
                   safe_vram_mb: float = 3200.0,
+                  max_sec: float = 241.5,
                   skip_log_path: str = None):
 
     os.makedirs(save_dir, exist_ok=True)
@@ -204,12 +205,21 @@ def extract_feats(extractor: FeatureExtractor,
         video_features = []
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
 
+        cap_temp = cv2.VideoCapture(vp)
+        fps_temp = cap_temp.get(cv2.CAP_PROP_FPS)
+        frames_temp = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap_temp.release()
+        
+        duration = frames_temp / fps_temp if fps_temp > 0 else 0
+        patch_size_K = max(1.0, duration / max_sec)
+        len_segments = int(patch_size * patch_size_K)
+
         if os.path.exists(save_path):
             continue
 
         try:
             
-            segment_generator = fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, 
+            segment_generator = fetch_video_patches(vp, target_fps=target_fps, patch_size=patch_size, max_sec=max_sec,
                                                     resize_dim=resize_dim, crop_dim=crop_dim)
             
             if has_trt:
@@ -229,7 +239,7 @@ def extract_feats(extractor: FeatureExtractor,
                 
                 batch_buffer.append(segment)
 
-                if len(batch_buffer) == batch_size or segment_idx == len(segment_generator) - 1:
+                if len(batch_buffer) == batch_size or segment_idx == len_segments - 1:
                     batch = torch.cat(batch_buffer, dim=0).to("cuda", non_blocking=True)
                     
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
@@ -241,7 +251,7 @@ def extract_feats(extractor: FeatureExtractor,
                     del batch, feats
                     torch.cuda.empty_cache()
 
-                print(f"Video: {video_idx+1:04d}/{len_videos} | Batch: {batch_size} | Segment: {segment_idx+1}", end='\r', flush=True)
+                print(f"Video: {video_idx+1:04d}/{len_videos} | Batch: {batch_size} | Segment: {segment_idx+1}/{len_segments}", end='\r', flush=True)
 
             print()
 
