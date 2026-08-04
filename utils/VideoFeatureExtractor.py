@@ -40,29 +40,6 @@ model_weights = {
 STR_MODEL_SPECIFY_ERROR = lambda model_name : f"Specified model {model_name} is unavailable. \
 Please use fallowing one: {model_creaters.keys()}"
 
-class PrefetchGenerator:
-    def __init__(self, generator, max_prefetch=10):
-        self.generator = generator
-        self.queue = Queue(maxsize=max_prefetch)
-        self.thread = threading.Thread(target=self._worker, daemon=True)
-        self.thread.start()
-
-    def _worker(self):
-        try:
-            for item in self.generator:
-                self.queue.put(item)
-        finally:
-            self.queue.put(None)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        item = self.queue.get()
-        if item is None:
-            raise StopIteration
-        return item
-
 class Video_Feature_Extractor(torch.nn.Module):
     """
     This module is designed to extract frames by pre-trained video classifier models: [`MViT`, `VideoResNet`, `S3D`, `SwinTransformer3d` from `torchvision.models.video`].
@@ -371,7 +348,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
         batch_buffer = []
         
         try:
-            base_generator = Video_Feature_Extractor.segment_generator(
+            segment_generator = Video_Feature_Extractor.segment_generator(
                 video_path=vp,
                 clips_per_segment=core_model.clips_per_segment,
                 frames_per_clip=core_model.frames_per_clip,
@@ -381,9 +358,9 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 height=imgsz
             )
 
-            prefetch_gen = PrefetchGenerator(base_generator, max_prefetch=batch_size * 2)
+            batch_size *= num_gpus
 
-            for segment_idx, segment in enumerate(prefetch_gen):
+            for segment_idx, segment in enumerate(segment_generator):
                 batch_buffer.append(segment)
 
                 if len(batch_buffer) == batch_size:
@@ -418,7 +395,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
             else:
                 raise ValueError("There is no segment in this video.")
 
-            del video_feature_tensor, video_features, base_generator
+            del video_feature_tensor, video_features, segment_generator
             gc.collect()
             torch.cuda.empty_cache()
             
