@@ -148,11 +148,22 @@ class Video_Feature_Extractor(torch.nn.Module):
         :param torch.Tensor x: Input tensor of shape [B, C, S, H, W], where B is batch size, C is number of channels, S is number of frames, H is height, and W is width.
         :return torch.Tensor: Output tensor of shape [B, D], where D is the feature dimension.
         """
+        is_batched = x.dim() == 6
+        
+        if is_batched:
+            B, Clips, C, S, H, W = x.shape
+            x = x.view(B * Clips, C, S, H, W)
+            
         if self.enable_feature_extractor:
-            x = self.feature_extractor(x)       # [B, C, S, H, W] -> [B, Dim]
-            x = x.mean(dim=0)                   # [B, Dim] -> [Dim]
+            x = self.feature_extractor(x)       # -> [B * Clips, Dim] or [Clips, Dim]
+            if is_batched:
+                x = x.view(B, Clips, -1).mean(dim=1) 
+            else:
+                x = x.mean(dim=0)               # -> [Dim]
+
         if self.enable_anomaly_classifier:
-            x = self.segment_ranker_model(x)    # [Dim] -> [1]
+            x = self.segment_ranker_model(x)    # -> [B, 1] veya [1]
+            
         return x
 
     def trt_inference(self, segment:torch.Tensor):
@@ -310,6 +321,7 @@ def calc_vram_usage_in_mb(model: torch.nn.Module, tensor: torch.Tensor) -> float
 def extract_feats(extractor: Video_Feature_Extractor,
                   video_paths: list,
                   save_dir: str,
+                  batch_size: int = 4,  # Yeni eklenen Batch parametresi
                   imgsz: int = 224,
                   fps: int = 30,
                   skip_log_path: str = None):
@@ -328,7 +340,6 @@ def extract_feats(extractor: Video_Feature_Extractor,
     extractor.eval()
 
     core_model = extractor.module if is_dp else extractor
-
     len_videos = len(video_paths)
     
     for video_idx, vp in enumerate(video_paths):
@@ -339,6 +350,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
             continue
 
         video_features = [] 
+        batch_buffer = []
         
         try:
             segment_generator = Video_Feature_Extractor.segment_generator(
@@ -352,19 +364,32 @@ def extract_feats(extractor: Video_Feature_Extractor,
             )
 
             for segment_idx, segment in enumerate(segment_generator):
-                segment = segment.to("cuda", non_blocking=True)
-                
+                batch_buffer.append(segment)
+
+                if len(batch_buffer) == batch_size:
+                    batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
+                    
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                        feats = extractor(batch_tensor)  
+                    
+                    video_features.append(feats.detach().cpu().clone())
+                    batch_buffer.clear()
+                    
+                    print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\r', flush=True)
+
+            if len(batch_buffer) > 0:
+                batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    feats = extractor(segment)  
-                
+                    feats = extractor(batch_tensor)
+                    
                 video_features.append(feats.detach().cpu().clone())
-                
-                print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment: {segment_idx+1}", end='\r', flush=True)
+                batch_buffer.clear()
+                print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\r', flush=True)
 
             print()
 
             if len(video_features) > 0:
-                video_feature_tensor = torch.stack(video_features, dim=0)  
+                video_feature_tensor = torch.cat(video_features, dim=0)  
                 torch.save(video_feature_tensor, save_path)
             else:
                 raise ValueError("There is no segment in this video.")
@@ -374,7 +399,6 @@ def extract_feats(extractor: Video_Feature_Extractor,
             torch.cuda.empty_cache()
             
         except Exception as e:
-
             with open(skip_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{vp}\t{str(e)}\n")
             print(f"\n[Skipped] {vp} -> Err: {str(e)}", flush=True)
