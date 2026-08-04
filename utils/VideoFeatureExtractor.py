@@ -2,10 +2,12 @@ import gc
 import os
 import cv2
 import torch
+import threading
 import torchvision.io as io
 import torch.nn.functional as F
 
-from tqdm import tqdm
+
+from queue import Queue
 from decord import VideoReader, cpu
 from typing import Generator, Optional
 from torchvision.models.video import *
@@ -37,6 +39,29 @@ model_weights = {
 
 STR_MODEL_SPECIFY_ERROR = lambda model_name : f"Specified model {model_name} is unavailable. \
 Please use fallowing one: {model_creaters.keys()}"
+
+class PrefetchGenerator:
+    def __init__(self, generator, max_prefetch=10):
+        self.generator = generator
+        self.queue = Queue(maxsize=max_prefetch)
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+
+    def _worker(self):
+        try:
+            for item in self.generator:
+                self.queue.put(item)
+        finally:
+            self.queue.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self.queue.get()
+        if item is None:
+            raise StopIteration
+        return item
 
 class Video_Feature_Extractor(torch.nn.Module):
     """
@@ -73,17 +98,8 @@ class Video_Feature_Extractor(torch.nn.Module):
                        fps:int = 30,
                        width:int = 224,
                        height:int = 224) -> Generator[torch.Tensor, None, None]:
-        """
-        Generate clips from a video file.
-
-        :param os.PathLike video_path: Path to the video file.
-        :param int frames_per_clip: Number of frames in a single clip.
-        :param int overlap: Number of overlapping frames between consecutive clips.
-        :param int fps: (Preprocess) Frame per Seconf for video.
-        :param width,height int: (Preprocess) Video frame size.
-        :return torch.Tensor: (Generator, Yields) A tensor of shape [C, frames_per_clip, H, W] representing a clip.
-        """
-        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
+        
+        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=4)
         org_fps = vr.get_avg_fps()
         frame_indices = torch.arange(0, len(vr), step=org_fps/fps).long()
         total_frames = len(frame_indices)
@@ -96,10 +112,12 @@ class Video_Feature_Extractor(torch.nn.Module):
             end_idx = start_idx + frames_per_clip
             if end_idx > total_frames:
                 break
+            
             clip_indices = frame_indices[start_idx:end_idx]
-            clip_frames = vr.get_batch(clip_indices).asnumpy()  # Shape: [frames_per_clip, H, W, C]
-            clip_tensor = torch.from_numpy(clip_frames).permute(3, 0, 1, 2)  # Shape: [C, frames_per_clip, H, W]
-            clip_tensor = clip_tensor.float()/255.0
+            
+            clip_frames = vr.get_batch(clip_indices).asnumpy() 
+            clip_tensor = torch.from_numpy(clip_frames).permute(3, 0, 1, 2) 
+            
             yield clip_tensor
 
     @staticmethod
@@ -353,7 +371,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
         batch_buffer = []
         
         try:
-            segment_generator = Video_Feature_Extractor.segment_generator(
+            base_generator = Video_Feature_Extractor.segment_generator(
                 video_path=vp,
                 clips_per_segment=core_model.clips_per_segment,
                 frames_per_clip=core_model.frames_per_clip,
@@ -363,11 +381,15 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 height=imgsz
             )
 
-            for segment_idx, segment in enumerate(segment_generator):
+            prefetch_gen = PrefetchGenerator(base_generator, max_prefetch=batch_size * 2)
+
+            for segment_idx, segment in enumerate(prefetch_gen):
                 batch_buffer.append(segment)
 
                 if len(batch_buffer) == batch_size:
+
                     batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
+                    batch_tensor = batch_tensor.float() / 255.0
                     
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                         feats = extractor(batch_tensor)  
@@ -379,6 +401,8 @@ def extract_feats(extractor: Video_Feature_Extractor,
 
             if len(batch_buffer) > 0:
                 batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
+                batch_tensor = batch_tensor.float() / 255.0
+                
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     feats = extractor(batch_tensor)
                     
@@ -394,7 +418,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
             else:
                 raise ValueError("There is no segment in this video.")
 
-            del video_feature_tensor, video_features, segment_generator
+            del video_feature_tensor, video_features, base_generator
             gc.collect()
             torch.cuda.empty_cache()
             
