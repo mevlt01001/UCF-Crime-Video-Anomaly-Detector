@@ -358,8 +358,6 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 height=imgsz
             )
 
-            batch_size *= num_gpus
-
             for segment_idx, segment in enumerate(segment_generator):
                 batch_buffer.append(segment)
 
@@ -374,7 +372,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                     video_features.append(feats.detach().cpu().clone())
                     batch_buffer.clear()
                     
-                    print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\r', flush=True)
+                    print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\n', flush=True)
 
             if len(batch_buffer) > 0:
                 batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
@@ -385,7 +383,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                     
                 video_features.append(feats.detach().cpu().clone())
                 batch_buffer.clear()
-                print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\r', flush=True)
+                print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment (Max): {segment_idx+1}", end='\n', flush=True)
 
             print()
 
