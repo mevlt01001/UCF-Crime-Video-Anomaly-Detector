@@ -613,7 +613,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
 
     # Video by Video
     for video_idx, vp in enumerate(video_paths):
-        total_segments = calc_total_segments(vp, fps, extractor)
+        total_segments = calc_total_segments(vp, fps, core_model)
 
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
         
