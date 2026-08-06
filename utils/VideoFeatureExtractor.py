@@ -670,10 +670,10 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 video_feature_tensor = torch.cat(video_features, dim=0)  
                 data = {
                     "feats":video_feature_tensor,
-                    "model":extractor.feature_extractor.__class__.__name__.lower(),
-                    "frames_per_clip": extractor.frames_per_clip,
-                    "clips_per_segment":extractor.clips_per_segment,
-                    "overlap":extractor.overlap,
+                    "model":core_model.feature_extractor.__class__.__name__.lower(),
+                    "frames_per_clip": core_model.frames_per_clip,
+                    "clips_per_segment":core_model.clips_per_segment,
+                    "overlap":core_model.overlap,
                     "imgsz":(H, W),
                     "fps":fps
                 }
