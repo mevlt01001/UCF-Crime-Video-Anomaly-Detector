@@ -210,10 +210,16 @@ class Video_Feature_Extractor(torch.nn.Module):
             # N x [B, C, CS, H, W] -> [N, B, C, CS, H, W]
             mini_batches = torch.stack(mini_batches, dim=0)
             mini_batches = mini_batches.to(device=device, 
-                                            dtype=torch.float32, 
-                                            non_blocking=True)
-            # Normalization
+                                        dtype=torch.float32, 
+                                        non_blocking=True)
+            # 0-1 Normalization
             mini_batches = mini_batches.div_(255.0)
+            
+            mean = torch.tensor([0.4850, 0.4560, 0.4060], device=device, dtype=torch.float32).view(1, 1, 3, 1, 1, 1)
+            std = torch.tensor([0.2290, 0.2240, 0.2250], device=device, dtype=torch.float32).view(1, 1, 3, 1, 1, 1)
+            
+            # Central Normalizasyon
+            mini_batches = (mini_batches - mean) / std
             return mini_batches
 
         def inference(mini_batches):
