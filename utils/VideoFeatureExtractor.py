@@ -554,7 +554,6 @@ class Video_Feature_Extractor(torch.nn.Module):
         if isinstance(video_classifier, str): 
             # If specified model by name in formed str
             if video_classifier.lower() in model_creaters.keys():
-                # If specified model name available
                 self.feature_extractor = model_creaters[video_classifier](weights=model_weights[video_classifier].DEFAULT)
             else: 
                 # If specified model name does not available

@@ -200,3 +200,33 @@ def generate_frames(video_path: os.PathLike,
     frames = vr.get_batch(frames_ids).asnumpy()
     
     return frames, actual_start_sec, actual_end_sec
+
+class AddGaussianNoise(torch.nn.Module):
+    def __init__(self, mean=0.0, std=0.04, p=0.15):
+        super().__init__()
+        self.mean = mean
+        self.std = std
+        self.p = p 
+
+    def forward(self, clip):
+        if torch.rand(1).item() < self.p:
+            noise = torch.randn_like(clip) * self.std + self.mean
+            return torch.clamp(clip + noise, 0.0, 1.0)
+        return clip
+
+class AddSaltAndPepperNoise(torch.nn.Module):
+    def __init__(self, amount=0.015, p=0.10):
+        super().__init__()
+        self.amount = amount  
+        self.p = p  
+
+    def forward(self, clip):
+        if torch.rand(1).item() < self.p:
+            T, C, H, W = clip.shape
+
+            rand_mask = torch.rand((T, 1, H, W), device=clip.device, dtype=clip.dtype)
+
+            clip = torch.where(rand_mask < (self.amount / 2), torch.ones_like(clip), clip)
+            clip = torch.where(rand_mask > (1.0 - (self.amount / 2)), torch.zeros_like(clip), clip)
+            
+        return clip
