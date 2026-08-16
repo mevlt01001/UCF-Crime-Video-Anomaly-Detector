@@ -722,3 +722,5 @@ def extract_feats(extractor: Video_Feature_Extractor,
             with open(skip_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{vp}\t{str(e)}\n")
             print(f"\n[Skipped] {vp} -> Err: {str(e)}", flush=True)
+            gc.collect()
+            torch.cuda.empty_cache()
