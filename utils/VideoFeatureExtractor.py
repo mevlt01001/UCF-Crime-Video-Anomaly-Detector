@@ -9,11 +9,12 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from queue import Queue
 from decord import VideoReader, cpu
+from torchvision.transforms import v2
 from typing import Generator, Optional
 from torchvision.models.video import *
 from .SegmentRankingModel import SegmentRankingModel
-from .video_preprocess import get_video_length, save_segment_clips
 from .visualization_tools import plot_anomaly_timeline
+from .video_preprocess import get_video_length, save_segment_clips, AddGaussianNoise, AddSaltAndPepperNoise
 
 model_creaters = {
     "mvit_v1_b": mvit_v1_b,
@@ -41,37 +42,68 @@ model_weights = {
 
 MODEL_SPECIFY_ERROR = lambda model_name : ValueError(f"Specified model {model_name} is unavailable. \
 Please use fallowing one: {model_creaters.keys()}")
-# LONG_VIDEO_ERROR = lambda frame_count : MemoryError(f"Video is too long! ({frame_count} frames)")
 EMPTY_MODEL_EXPORT_ERROR = lambda enable_feature_extractor, enable_fc_layers : AttributeError(f"An \
 empty model cannot be exported! (enable_feature_extractor: {enable_feature_extractor}, enable_fc_layers:{enable_fc_layers}))")
 ONNX_PARSING_ERROR = lambda filename : RuntimeError(f"ONNX Parsing error for model: {filename}")
 TRT_RUNTIME_GENERATOR_FAILURE = RuntimeError("TRT Plan generation failed!")
 MODEL_HAS_NO_CLASSIFIER_ERROR = ValueError("The feature extractor model does not have a classifier or head attribute.")
 NO_SEGMENT_ERROR = ValueError("There is no segment in this video.")
+VIDEO_TOO_SHORT_ERROR = lambda vp, f, s : ValueError(f"Video {vp} is too short ({f} frames) to be divided into {s} segments.")
+
+def get_number_of_segments(min_segment_size: int, 
+                           max_segment_size: int, 
+                           number_of_segment: int, 
+                           total_frames: int, 
+                           clip_size: int,
+                           stride: int = None) -> int:
+    """
+    Belirli bir klip limiti (min/max_segment_size) içinde kalacak şekilde 
+    optimum segment sayısını hesaplar.
+    """
+    if stride is None:
+        stride = clip_size
+        
+    max_frame_per_segment = ((max_segment_size - 1) * stride) + clip_size
+    min_frame_per_segment = ((min_segment_size - 1) * stride) + clip_size
+    
+    min_number_of_segment = total_frames // max_frame_per_segment + 1
+    max_number_of_segment = total_frames // min_frame_per_segment - 1
+    
+    max_number_of_segment = max(1, max_number_of_segment)
+    
+    if number_of_segment <= min_number_of_segment:
+        number_of_segment = min_number_of_segment
+
+    if number_of_segment > max_number_of_segment:
+        number_of_segment = max_number_of_segment
+        
+    return max(1, number_of_segment)
 
 class Video_Feature_Extractor(torch.nn.Module):
     """
-    This module is designed to extract frames by pre-trained video classifier models: [`MViT`, `VideoResNet`, `S3D`, `SwinTransformer3d` from `torchvision.models.video`].
-
-    :param Optional[MViT | VideoResNet | S3D | SwinTransformer3d | str] feature_extractor_model: Pre-trained video classification model from `torchvision.models.video`.
-    :param int frames_per_clip: Number of frames in a single clip.
-    :param int overlap: Number of overlapping frames between consecutive clips.
-    :param int clips_per_segment: Number of clips in a single segment.
+    This module is designed to extract frames by pre-trained video classifier models.
+    
+    :param feature_extractor_model: Pre-trained video classification model.
+    :param int segments_per_video: Number of segments to strictly divide the video into.
     """
     def __init__(self, 
                  feature_extractor_model:Optional[MViT | VideoResNet | S3D | SwinTransformer3d | str], 
-                 frames_per_clip:int,
+                 clip_size:int,
                  overlap:int,
-                 clips_per_segment:int,
+                 number_of_segments:int,
+                 max_clip_per_segment:int,
+                 min_clip_per_segment:int,
                  fc_layer_checkpoint = None,
                  enable_feature_extractor:bool = True,
                  enable_fc_layers:bool = True
                  ):
         super().__init__()
-        self.frames_per_clip = frames_per_clip
+        self.clip_size = clip_size
         self.overlap = overlap
-        self.stride = frames_per_clip - overlap
-        self.clips_per_segment = clips_per_segment
+        self.stride = clip_size-overlap
+        self.number_of_segments = number_of_segments
+        self.max_clip_per_segment = max_clip_per_segment
+        self.min_clip_per_segment = min_clip_per_segment
         self.enable_feature_extractor = enable_feature_extractor
         self.enable_fc_layers = enable_fc_layers
         self.__set_video_classifier(feature_extractor_model)
@@ -79,108 +111,122 @@ class Video_Feature_Extractor(torch.nn.Module):
         self.segment_ranker_model = SegmentRankingModel(self.feature_dim)
         if fc_layer_checkpoint:
             self.segment_ranker_model.load_state_dict(fc_layer_checkpoint)
+        self.video_preprocess = v2.Compose([
+
+            v2.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0), antialias=True),
+            v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            
+            v2.RandomApply([v2.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.5))], p=0.15),
+            AddGaussianNoise(mean=0.0, std=0.03, p=0.15),
+            AddSaltAndPepperNoise(amount=0.01, p=0.10),
+        ])
 
     @staticmethod
-    def clip_generator(video_path:os.PathLike, 
-                       frames_per_clip:int, 
-                       overlap:int,
-                       fps:int = 30,
-                       width:int = 224,
-                       height:int = 224) -> Generator[torch.Tensor, None, None]:
+    def clip_generator(segment_frames: torch.Tensor, 
+                       clip_size: int,
+                       stride:int) -> torch.Tensor:
         """
-        Yields clips from given video. Each yield size is [C, CS, H, W] (C:Channel, CS: Clip size (Number of Frame))
-        :param video_path os.Pathlike: Video Path
-        :param frames_per_clip int: Number of frames per clip.
-        :param overlap int: Number of overllapped frame between two clips.
-        :param fps int: FPS.
-        :param width int: Frame width.
-        :param height int: Frame height.
+        :param segment_frames torch.Tensor: Number of frames per segment. Shaped like [N, H, W, C] Float, 0-1 normalized. 
+        :param clip_size int: Number of frames per clip.
+        :param stride int: Number of strided frames. 
+        :return torch.Tensor: Clipped tensor shaped like [NC, CS, H, W, C]
         """
+
+        N = segment_frames.shape[0]
+        remain = (N - clip_size) % stride
+        if remain != 0:
+            pad = stride - remain
+            if pad >= remain: 
+                segment_frames = segment_frames[: N - remain]
+            else:
+                segment_frames = F.pad(segment_frames, (0, 0, 0, 0, 0, 0, 0, pad))
+            N = segment_frames.shape[0]
+
+        clips = []
+        for end_idx in range(clip_size, N + 1, stride):
+            start_idx = end_idx - clip_size
+            clip = segment_frames[start_idx:end_idx]
+            clips.append(clip)
+
+        clips = torch.stack(clips, dim=0) # [NC, CS, H, W, C]
+        return clips
         
+
+    @staticmethod
+    def segment_generator(video_path: os.PathLike,
+                          clip_size: int,
+                          stride: int,
+                          max_clips_per_segment: int | None,
+                          min_clips_per_segment: int | None,
+                          number_of_segments: int,
+                          fps: int = 30,
+                          width: int = 224,
+                          height: int = 224,
+                          augmentation: v2 = None) -> tuple[Generator[torch.Tensor, None, None], int]:
+
         vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=4)
         org_fps = vr.get_avg_fps()
         frame_indices = torch.arange(0, len(vr), step=org_fps/fps).long()
         total_frames = len(frame_indices)
-        stride = frames_per_clip - overlap
-
-        for start_idx in range(0, total_frames - frames_per_clip + 1, stride):
-            end_idx = start_idx + frames_per_clip
-            if end_idx > total_frames:
-                break
+        
+        number_of_segments = get_number_of_segments(min_clips_per_segment, max_clips_per_segment, 
+                                                    number_of_segments, total_frames, clip_size, stride)
             
-            clip_indices = frame_indices[start_idx:end_idx]
-            
-            clip_frames = vr.get_batch(clip_indices).asnumpy() # [N, H, W, C]
-            clip_tensor = torch.from_numpy(clip_frames).permute(3, 0, 1, 2) # [C, N, H, W]
-            
-            yield clip_tensor
+        if total_frames < number_of_segments * clip_size:
+            raise VIDEO_TOO_SHORT_ERROR(video_path, total_frames, number_of_segments)
+        
+        segment_size = total_frames // number_of_segments
 
-    @staticmethod
-    def segment_generator(video_path:os.PathLike, 
-                          clips_per_segment:int,
-                          frames_per_clip:int, 
-                          overlap:int,
-                          fps:int = 30,
-                          width:int = 224,
-                          height:int = 224) -> Generator[torch.Tensor, None, None]:
-        """
-        Yields segments from given video. Yield shape is [SS, C, CS, H, W](SS: Segments size, C: Number of Channel, CS: Clip size, Number of frame)
-
-        :param video_path os.PathLike: Video path.
-        :param clips_per_segment int: Number of clips per segment.
-        :param frames_per_clip int: Number of frames per clip.
-        :param overlap int: Number of overlapping frames intersected clips.
-        :param fps int: (Preprocess) Video's FPS
-        :param width int: Video width
-        :param height int: Video height
-        """
-
-        # clip_generator yields clips shaped [C, N, H, W]
-        clip_generator = Video_Feature_Extractor.clip_generator(video_path, frames_per_clip, overlap, fps, width, height)
-        clips_buffer = []
-
-        for clip in clip_generator:
-            if clip is None: break
-
-            clips_buffer.append(clip)
-            if len(clips_buffer) == clips_per_segment:
-                segment_tensor = torch.stack(clips_buffer, dim=0) # [B, C, N, H, W]
-                clips_buffer.clear()
+        def _generator():
+            for i in range(number_of_segments):
+                start_idx = i * segment_size
+                end_idx = start_idx + segment_size
+                
+                segment_indices = frame_indices[start_idx:end_idx]       # [T]
+                segment_frames = vr.get_batch(segment_indices).asnumpy() # [T, H, W, C] numpy.array uint8
+                segment_tensor = torch.from_numpy(segment_frames)        # [T, H, W, C] torch.Tensor uint8
+                segment_tensor = segment_tensor.float() / 255.0          # [T, H, W, C] float 0.0-1.0 Normed
+                segment_tensor = Video_Feature_Extractor.clip_generator( # [NC, CS, H, W, C] 
+                    segment_tensor, 
+                    clip_size, 
+                    stride
+                )
+                NC, CS, H, W, C = segment_tensor.shape
+                if augmentation is not None:
+                    segment_tensor = segment_tensor.view(NC*CS, H, W, C)
+                    segment_tensor = segment_tensor.permute(0, 3, 1, 2) # [N, H, W, C] -> [N, C, H, W]
+                    segment_tensor = augmentation(segment_tensor)
+                    segment_tensor = segment_tensor.permute(0, 2, 3, 1) # [N, C, H, W] -> [N, H, W, C]
+                    segment_tensor = segment_tensor.view(NC, CS, H, W, C)
+                segment_tensor = segment_tensor.permute(0, 4, 1, 2, 3)
+                segment_tensor = segment_tensor.contiguous()
+                
                 yield segment_tensor
 
-        if clips_buffer:
-            segment_tensor = torch.stack(clips_buffer, dim=0)
-            pad = clips_per_segment - segment_tensor.shape[0]
-            if pad < (clips_per_segment / 2):
-                segment_tensor = F.pad(segment_tensor, pad=(0, 0, 0, 0, 0, 0, 0, 0, 0, pad))
-                yield segment_tensor
+        return _generator(), number_of_segments
 
-    def feature_extractor_forward(self, x):
-        B, Clips, C, S, H, W = x.shape
-        x = x.view(B * Clips, C, S, H, W)
-        x = self.feature_extractor(x)
-        x = x.view(B, Clips, -1).mean(dim=1) # [B, Dim]
+    def feature_extractor_forward(self, x:torch.Tensor):
+        # x is [B, NC, C, CS, H, W]. B is batch(segment), NC is Number of Clips, CS is Clip size.
+        B, NC, C, CS, H, W = x.shape
+        x = x.view(B*NC, C, CS, H, W) # model works shape like [B, C, T, H, W], T is temporal depth
+        x = self.feature_extractor(x) # [B, Dim, ...]
+        x = x.view(B, NC, -1) # [B, NC, Dim]
+        x = x.mean(1, keepdim=False) # [B, Dim]
         return x
 
     def fc_layers_forward(self, x):
-        x = self.segment_ranker_model(x)     # [B, 1]
+        x = self.segment_ranker_model(x) # [B, 1]
         return x
             
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass of the feature extractor.
-
-        :param torch.Tensor x: 
-            If `enable_feature_extractor` input tensor of shape [B, SS, C, CS, H, W](B: Number of Segments, SS: Segment Size , C: Number of Channel, CS: Clip size (Number of frames))\n
-            If only `enable_fc_layers` input tensor of shape [B, D](B: Number of Segments, D: Feature Dim)\n
-
-        :return torch.Tensor: 
-            If only `enable_feature_extractor` Output tensor of shape [B, D](B: Number of Segments, D: Feature Dim) \n
-            If `enable_fc_layers` Output tensor of shape [B, 1](B: Number of Segments, 1: Anomaly Score)
+        Forward pass.
+        If `enable_feature_extractor`: expects x shape [NC, C, CS, H, W] -> outputs [B, D] or [B, 1]
         """
         if hasattr(self, "trt_engine"):
             return self.trt_inference(x)
-        if x.dim() == 6 and self.enable_feature_extractor:
+            
+        if self.enable_feature_extractor:
             x = self.feature_extractor_forward(x)
         if self.enable_fc_layers:
             x = self.fc_layers_forward(x)
@@ -202,66 +248,41 @@ class Video_Feature_Extractor(torch.nn.Module):
                 save_dir="Video_Analyses"
                 ):
         
-        import math
         from tqdm import tqdm
         from decord import VideoReader, cpu
 
         def batch_flush(mini_batches):
-            # N x [B, C, CS, H, W] -> [N, B, C, CS, H, W]
+            # N x [C, T, H, W] -> [N, C, T, H, W]
             mini_batches = torch.stack(mini_batches, dim=0)
             mini_batches = mini_batches.to(device=device, 
                                         dtype=torch.float32, 
                                         non_blocking=True)
             # 0-1 Normalization
             mini_batches = mini_batches.div_(255.0)
-            
-            mean = torch.tensor([0.4850, 0.4560, 0.4060], device=device, dtype=torch.float32).view(1, 1, 3, 1, 1, 1)
-            std = torch.tensor([0.2290, 0.2240, 0.2250], device=device, dtype=torch.float32).view(1, 1, 3, 1, 1, 1)
-            
-            # Central Normalizasyon
-            mini_batches = (mini_batches - mean) / std
             return mini_batches
 
         def inference(mini_batches):
-            # Preprocess
             mini_batches = batch_flush(mini_batches)
             if self.trt_engine is not None:
-                # If TensorRT Engine enabled
                 score = self.forward(mini_batches)
             else:
-                # Only Pytorch Inference in FP16
                 with torch.amp.autocast(device_type=device, dtype=torch.float16):
                     score = self.forward(mini_batches)
             return score
 
         device = next(self.parameters()).device.type
-        if self.trt_engine is not None:
+        if hasattr(self, "trt_engine") and self.trt_engine is not None:
             device = "cuda"
 
-        vr = VideoReader(video_path, ctx=cpu(0))
-        org_fps = vr.get_avg_fps()
-        total_orig_frames = len(vr)
-        del vr
 
-        target_frame_count = len(torch.arange(0, total_orig_frames, step=org_fps/FPS))
-        stride = self.frames_per_clip - self.overlap
-        
-        if target_frame_count >= self.frames_per_clip:
-            total_clips = (target_frame_count - self.frames_per_clip) // stride + 1
-        else:
-            total_clips = 0
-            
-        total_segments = math.ceil(total_clips / self.clips_per_segment)
-
-        segment_generator = Video_Feature_Extractor.segment_generator(
-            video_path, self.clips_per_segment, 
-            self.frames_per_clip, 
-            self.overlap, FPS, 
-            width, height
+        segment_generator, number_of_segments = Video_Feature_Extractor.segment_generator(
+            video_path, self.clip_size, self.stride, self.max_clip_per_segment, self.min_clip_per_segment,
+            self.number_of_segments, FPS, width, height, None
         )
 
+        total_segments = number_of_segments
         scores = [] # N x [B, 1]
-        mini_batches = [] # N x [B, C, CS, H, W]
+        mini_batches = [] # N x [C, T, H, W]
         
         pbar = tqdm(total=total_segments, desc=f"Processing {os.path.basename(video_path)}")
         
@@ -307,6 +328,7 @@ class Video_Feature_Extractor(torch.nn.Module):
                     save_clips
                 )
 
+    # create_segments metodu orijinal halinde bırakılmıştır, aynı şekilde 1D interpolate işlemi devam edecektir.
     @torch.no_grad()
     def create_segments(self, 
                         scores:torch.Tensor,
@@ -414,15 +436,8 @@ class Video_Feature_Extractor(torch.nn.Module):
         return final_segments
 
     def trt_inference(self, segment:torch.Tensor):
-        """
-        Run inference on TensorRT engine. Throws `AttributeError` if not runned `export_trt()` method.
-
-        :param segment torch.Tensor: Input for trt engine. Shape is [B, SS, C, CS, H, W](B: Number of Segments, SS: Segment Size , C: Number of Channel, CS: Clip size (Number of frames))
-        """
         segment = segment.contiguous().to(device="cuda", dtype=torch.float32)
-        
         self.trt_context.set_input_shape("input", tuple(segment.shape))
-
         output_shape = tuple(self.trt_context.get_tensor_shape("output"))
         output = torch.empty(output_shape, dtype=torch.float32, device=segment.device)
 
@@ -435,24 +450,19 @@ class Video_Feature_Extractor(torch.nn.Module):
         
         return output
 
-    def export_onnx(self, filename:str, imgsz:tuple|int, batch_size:int):
+    def export_onnx(self, filename:str, imgsz:tuple|int, batch_size:int, dummy_t:int=16):
         """
-        Export ONNX file its forward.
-
-        :param filename str: ONNX file name which is going to save.
-        :param imgsz tuple,int: Image size. IF tuple H, W = imgsz; else H, W = imgsz, imgsz.
-        :param batch_size int: Batch Size.
+        Added `dummy_t` parameter and set Axis 2 to dynamic "T".
         """
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         import onnx, onnxsim
 
         B = batch_size
-        SS = self.clips_per_segment # Segment Size, number of clips per segmetn
-        CS = self.frames_per_clip # Clip size, Number of frames per clip
         DIM = self.feature_dim
-        H, W = imgsz if isinstance(imgsz, tuple) else imgsz, imgsz
+        H, W = imgsz if isinstance(imgsz, tuple) else (imgsz, imgsz)
 
-        dummy = torch.rand(B, SS, 3, CS, H, W, device="cpu")
+        # Dynamic T shape initialization
+        dummy = torch.rand(B, 3, dummy_t, H, W, device="cpu")
 
         if not self.enable_feature_extractor and self.enable_fc_layers:
             dummy = torch.rand(B, DIM)
@@ -466,26 +476,28 @@ class Video_Feature_Extractor(torch.nn.Module):
             filename,
             input_names=["input"],
             output_names=["output"],
-            dynamic_shapes = {'x': {0: 'B'}},
+            dynamic_shapes = {'input': {0: 'B', 2: 'T'}} if self.enable_feature_extractor else {'input': {0: 'B'}},
             opset_version=19,
             do_constant_folding=True,
         )
 
         onnx_model = onnx.load(filename)
         onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-        onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"input": [B, SS, 3, CS, H, W]})
+        
+        if self.enable_feature_extractor:
+            onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"input": [B, 3, dummy_t, H, W]})
+        else:
+            onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"input": [B, DIM]})
+            
         onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
         onnx.save(onnx_model, filename)
 
-        return B, SS, CS, H, W, DIM
+        return B, H, W, DIM
 
-    def export_trt(self, file_name, imgsz, batch_size):
+    def export_trt(self, file_name, imgsz, batch_size, min_t=4, max_t=1024):
         """
-        Export TensorRT engine plan file.
-
-        :param filename str: Trt plan file name which is going to save without extantion. For example (Model, Not Model.trt or Model.engine or Model.plan)
-        :param imgsz tuple,int: Image size. IF tuple H, W = imgsz; else H, W = imgsz, imgsz.
-        :param batch_size int: Batch Size.
+        TensorRT expects bounds for dynamic spatial/temporal sizes. 
+        min_t and max_t sets lower/upper bounds for temporal chunks.
         """
         self.eval().cpu()
         import tensorrt as trt
@@ -493,7 +505,6 @@ class Video_Feature_Extractor(torch.nn.Module):
         
         BUILDER = trt.Builder(TRT_LOGGER)
         NETWORK = BUILDER.create_network()
-        
         PARSER = trt.OnnxParser(NETWORK, TRT_LOGGER)
         
         CONFIG = BUILDER.create_builder_config()
@@ -505,25 +516,27 @@ class Video_Feature_Extractor(torch.nn.Module):
             # If plan file already exists.
             return self.load_trt(trt_filename, trt.Runtime(TRT_LOGGER))
             
-        B, SS, CS, H, W, DIM= self.export_onnx(onnx_filename, imgsz, batch_size)
+        B, H, W, DIM = self.export_onnx(onnx_filename, imgsz, batch_size)
 
         if not PARSER.parse_from_file(onnx_filename):
             for error in range(PARSER.num_errors):
                 print(PARSER.get_error(error))
             raise ONNX_PARSING_ERROR(onnx_filename)
 
-        min_shape = (1, SS, 3, CS, H, W)
-        max_shape = (B, SS, 3, CS, H, W)
         if not self.enable_feature_extractor and self.enable_fc_layers:
             min_shape = (1, DIM)
             max_shape = (B, DIM)
-        elif not (self.enable_feature_extractor or self.enable_fc_layers):
+            OPT_PROFILE.set_shape("input", min_shape, max_shape, max_shape)
+        elif self.enable_feature_extractor:
+            min_shape = (1, 3, min_t, H, W)
+            opt_shape = (B, 3, 16, H, W)
+            max_shape = (B, 3, max_t, H, W)
+            OPT_PROFILE.set_shape("input", min_shape, opt_shape, max_shape)
+        else:
             raise EMPTY_MODEL_EXPORT_ERROR(self.enable_feature_extractor,
                                             self.enable_fc_layers)
         
-        OPT_PROFILE.set_shape("input", min_shape, max_shape, max_shape)
         CONFIG.add_optimization_profile(OPT_PROFILE)
-
         engine_bytes = BUILDER.build_serialized_network(NETWORK, CONFIG)
         
         if engine_bytes is None:
@@ -554,6 +567,7 @@ class Video_Feature_Extractor(torch.nn.Module):
         if isinstance(video_classifier, str): 
             # If specified model by name in formed str
             if video_classifier.lower() in model_creaters.keys():
+            # If specified model name available
                 self.feature_extractor = model_creaters[video_classifier](weights=model_weights[video_classifier].DEFAULT)
             else: 
                 # If specified model name does not available
@@ -587,6 +601,7 @@ class Video_Feature_Extractor(torch.nn.Module):
         else:
             raise MODEL_HAS_NO_CLASSIFIER_ERROR
 
+
 @torch.no_grad()
 def extract_feats(extractor: Video_Feature_Extractor,
                   video_paths: list,
@@ -594,6 +609,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                   batch_size: int = 4,
                   imgsz: int|tuple = 224,
                   fps: int = 30,
+                  augmentation = None,
                   skip_log_path: str = None):
 
     extractor.enable_feature_extractor = True
@@ -616,10 +632,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
     core_model = extractor.module if is_dp else extractor
     len_videos = len(video_paths)
 
-    # Video by Video
     for video_idx, vp in enumerate(video_paths):
-        total_segments = calc_total_segments(vp, fps, core_model)
-
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
         
         if os.path.exists(save_path):
@@ -627,27 +640,30 @@ def extract_feats(extractor: Video_Feature_Extractor,
             continue
 
         video_features = [] # N x [B, Dim]
-        batch_buffer = []   # B x [SS, C, CS, H, W]
+        batch_buffer = []   # B x [C, T, H, W]
         
         try:
-            segment_generator = Video_Feature_Extractor.segment_generator(
+            segment_generator, number_of_segments = Video_Feature_Extractor.segment_generator(
                 video_path=vp,
-                clips_per_segment=core_model.clips_per_segment,
-                frames_per_clip=core_model.frames_per_clip,
-                overlap=core_model.overlap,
+                clip_size=extractor.clip_size,
+                stride=extractor.stride,
+                max_clips_per_segment=extractor.max_clip_per_segment,
+                min_clips_per_segment=extractor.min_clip_per_segment,
+                number_of_segments=extractor.number_of_segments,
                 fps=fps,
                 width=W,
-                height=H
+                height=H,
+                augmentation = augmentation
             )
+
+            total_segments = number_of_segments
 
             for segment_idx, segment in enumerate(segment_generator):
                 batch_buffer.append(segment)
 
                 if len(batch_buffer) == batch_size:
-                    # B X [SS, C, CS, H, W] -> [B, SS, C, CS, H, W]
-                    batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
-                    batch_tensor = batch_tensor.float() / 255.0
-                    
+                    # B X [C, T, H, W] -> [B, C, T, H, W]
+                    batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)                    
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                         feats = extractor(batch_tensor) # [B, Dim]
                     
@@ -657,9 +673,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                     print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment: {segment_idx+1}/{total_segments}", end='\n', flush=True)
 
             if len(batch_buffer) > 0:
-                # B X [SS, C, CS, H, W] -> [B, SS, C, CS, H, W]
                 batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
-                batch_tensor = batch_tensor.float() / 255.0
                 
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     feats = extractor(batch_tensor) # [B, Dim]
@@ -676,9 +690,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 data = {
                     "feats":video_feature_tensor,
                     "model":core_model.feature_extractor.__class__.__name__.lower(),
-                    "frames_per_clip": core_model.frames_per_clip,
-                    "clips_per_segment":core_model.clips_per_segment,
-                    "overlap":core_model.overlap,
+                    "segments_per_video": core_model.number_of_segments, # Sadece bu kaldı
                     "imgsz":(H, W),
                     "fps":fps
                 }
@@ -694,30 +706,3 @@ def extract_feats(extractor: Video_Feature_Extractor,
             with open(skip_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{vp}\t{str(e)}\n")
             print(f"\n[Skipped] {vp} -> Err: {str(e)}", flush=True)
-
-def calc_total_segments(vp, fps, extractor):
-    vr = VideoReader(vp, ctx=cpu(0), num_threads=4)
-    org_fps = vr.get_avg_fps()
-    frame_indices = torch.arange(0, len(vr), step=org_fps/fps).long()
-    total_frames = len(frame_indices)
-    del vr
-
-    stride = extractor.frames_per_clip - extractor.overlap
-
-    stop_idx = total_frames - extractor.frames_per_clip + 1
-    if stop_idx > 0:
-        total_clips = len(range(0, stop_idx, stride)) 
-    else:
-        total_clips = 0
-
-    base_segments = total_clips // extractor.clips_per_segment
-    remainder_clips = total_clips % extractor.clips_per_segment
-
-    extra_segment = 0
-    if remainder_clips > 0:
-        pad = extractor.clips_per_segment - remainder_clips
-        if pad < (extractor.clips_per_segment / 2.0):
-            extra_segment = 1
-
-    total_segments = base_segments + extra_segment
-    return total_segments
