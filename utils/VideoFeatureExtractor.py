@@ -612,6 +612,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                   augmentation = None,
                   skip_log_path: str = None):
 
+
     extractor.enable_feature_extractor = True
     extractor.enable_fc_layers = False
     H, W = imgsz if isinstance(imgsz, (tuple, list)) else (imgsz, imgsz)
@@ -632,6 +633,24 @@ def extract_feats(extractor: Video_Feature_Extractor,
     core_model = extractor.module if is_dp else extractor
     len_videos = len(video_paths)
 
+    def inference(batch:torch.Tensor):
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            feats = extractor(batch) # [B, Dim]
+        del batch
+        return feats
+
+    def print_info(video_idx, vp, segment_idx, total_segments, segment):
+        info = (
+            f"Video: {video_idx+1:04d}/{len_videos} | "
+            f"Video: {os.path.basename(vp)} | "
+            f"Segment: {segment_idx+1}/{total_segments} "
+            f"Shape: {segment.shape} "
+            f"Type: {segment.dtype} "
+            f"MaxVal: {segment.max()} "
+            f"MinVal: {segment.min()} "
+        )
+        print(info, end='\n', flush=True)
+
     for video_idx, vp in enumerate(video_paths):
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
         
@@ -643,7 +662,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
         batch_buffer = []   # B x [C, T, H, W]
         
         try:
-            segment_generator, number_of_segments = Video_Feature_Extractor.segment_generator(
+            segment_generator, total_segments = Video_Feature_Extractor.segment_generator(
                 video_path=vp,
                 clip_size=core_model.clip_size,
                 stride=core_model.stride,
@@ -656,31 +675,23 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 augmentation = augmentation
             )
 
-            total_segments = number_of_segments
-
             for segment_idx, segment in enumerate(segment_generator):
                 batch_buffer.append(segment)
 
                 if len(batch_buffer) == batch_size:
                     # B X [C, T, H, W] -> [B, C, T, H, W]
                     batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)                    
-                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                        feats = extractor(batch_tensor) # [B, Dim]
-                    
+                    feats = inference(batch_tensor)
                     video_features.append(feats.detach().cpu().clone())
                     batch_buffer.clear()
-                    
-                    print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment: {segment_idx+1}/{total_segments}", end='\n', flush=True)
+                    print_info(video_idx, vp, segment_idx, total_segments, segment)
 
             if len(batch_buffer) > 0:
-                batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)
-                
-                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    feats = extractor(batch_tensor) # [B, Dim]
-                    
+                batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)                    
+                feats = inference(batch_tensor)
                 video_features.append(feats.detach().cpu().clone())
                 batch_buffer.clear()
-                print(f"Video: {video_idx+1:04d}/{len_videos} | Video: {os.path.basename(vp)} | Segment: {segment_idx+1}/{total_segments}", end='\n', flush=True)
+                print_info(video_idx, vp, segment_idx, total_segments, segment)
 
             print()
 
@@ -690,9 +701,14 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 data = {
                     "feats":video_feature_tensor,
                     "model":core_model.feature_extractor.__class__.__name__.lower(),
-                    "segments_per_video": core_model.number_of_segments, # Sadece bu kaldı
-                    "imgsz":(H, W),
-                    "fps":fps
+                    "clip_size": 24,
+                    "overlap": core_model.overlap,
+                    "max_segment_size": core_model.max_clip_per_segment,
+                    "min_segment_size": core_model.min_clip_per_segment,
+                    "fps": fps,
+                    "number_of_segment": core_model.number_of_segments,
+                    "width": W,
+                    "height": H
                 }
                 torch.save(data, save_path)
             else:
