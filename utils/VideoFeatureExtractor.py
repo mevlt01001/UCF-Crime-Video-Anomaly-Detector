@@ -3,6 +3,7 @@ import os
 import cv2
 import torch
 import threading
+import numpy as np
 import torchvision.io as io
 import torch.nn.functional as F
 
@@ -50,34 +51,34 @@ MODEL_HAS_NO_CLASSIFIER_ERROR = ValueError("The feature extractor model does not
 NO_SEGMENT_ERROR = ValueError("There is no segment in this video.")
 VIDEO_TOO_SHORT_ERROR = lambda vp, f, s : ValueError(f"Video {vp} is too short ({f} frames) to be divided into {s} segments.")
 
-def get_number_of_segments(min_segment_size: int, 
-                           max_segment_size: int, 
-                           number_of_segment: int, 
-                           total_frames: int, 
-                           clip_size: int,
-                           stride: int = None) -> int:
+def get_number_of_segments(min_segment_size: int,
+                            max_segment_size: int,
+                            number_of_segment: int,
+                            total_frames: int,
+                            clip_size: int,
+                            stride: int = None) -> int:
     """
-    Belirli bir klip limiti (min/max_segment_size) içinde kalacak şekilde 
-    optimum segment sayısını hesaplar.
+    Calculates the optimum number of segments based on the specified clip limit.
     """
     if stride is None:
         stride = clip_size
-        
+ 
     max_frame_per_segment = ((max_segment_size - 1) * stride) + clip_size
     min_frame_per_segment = ((min_segment_size - 1) * stride) + clip_size
-    
+ 
     min_number_of_segment = total_frames // max_frame_per_segment + 1
     max_number_of_segment = total_frames // min_frame_per_segment - 1
-    
+ 
     max_number_of_segment = max(1, max_number_of_segment)
-    
+ 
     if number_of_segment <= min_number_of_segment:
         number_of_segment = min_number_of_segment
-
+ 
     if number_of_segment > max_number_of_segment:
         number_of_segment = max_number_of_segment
-        
+ 
     return max(1, number_of_segment)
+
 
 class Video_Feature_Extractor(torch.nn.Module):
     """
@@ -86,152 +87,178 @@ class Video_Feature_Extractor(torch.nn.Module):
     :param feature_extractor_model: Pre-trained video classification model.
     :param int segments_per_video: Number of segments to strictly divide the video into.
     """
-    def __init__(self, 
-                 feature_extractor_model:Optional[MViT | VideoResNet | S3D | SwinTransformer3d | str], 
-                 clip_size:int,
-                 overlap:int,
-                 number_of_segments:int,
-                 max_clip_per_segment:int,
-                 min_clip_per_segment:int,
-                 fc_layer_checkpoint = None,
-                 enable_feature_extractor:bool = True,
-                 enable_fc_layers:bool = True
-                 ):
+    def __init__(self,
+                feature_extractor_model: Optional[MViT | VideoResNet | S3D | SwinTransformer3d | str],
+                clip_size: int,
+                overlap: int,
+                number_of_segments: int,
+                max_clip_per_segment: int,
+                min_clip_per_segment: int,
+                fc_layer_checkpoint=None,
+                enable_feature_extractor: bool = True,
+                enable_fc_layers: bool = True,
+                micro_batch_size: int = 8,
+                ):
+        
         super().__init__()
         self.clip_size = clip_size
         self.overlap = overlap
-        self.stride = clip_size-overlap
+        self.stride = clip_size - overlap
         self.number_of_segments = number_of_segments
         self.max_clip_per_segment = max_clip_per_segment
         self.min_clip_per_segment = min_clip_per_segment
         self.enable_feature_extractor = enable_feature_extractor
         self.enable_fc_layers = enable_fc_layers
+
+        self.micro_batch_size = micro_batch_size
+
         self.__set_video_classifier(feature_extractor_model)
         self.__set_video_classifier_feature_dim()
         self.segment_ranker_model = SegmentRankingModel(self.feature_dim)
         if fc_layer_checkpoint:
             self.segment_ranker_model.load_state_dict(fc_layer_checkpoint)
-        self.video_preprocess = v2.Compose([
 
+        self.video_preprocess = v2.Compose([
             v2.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0), antialias=True),
             v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            
             v2.RandomApply([v2.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.5))], p=0.15),
             AddGaussianNoise(mean=0.0, std=0.03, p=0.15),
             AddSaltAndPepperNoise(amount=0.01, p=0.10),
         ])
 
     @staticmethod
-    def clip_generator(segment_frames: torch.Tensor, 
-                       clip_size: int,
-                       stride:int) -> torch.Tensor:
+    def clip_generator(segment_frames: torch.Tensor,
+                        clip_size: int,
+                        stride: int) -> torch.Tensor:
         """
-        :param segment_frames torch.Tensor: Number of frames per segment. Shaped like [N, H, W, C] Float, 0-1 normalized. 
-        :param clip_size int: Number of frames per clip.
-        :param stride int: Number of strided frames. 
-        :return torch.Tensor: Clipped tensor shaped like [NC, CS, H, W, C]
+        :param segment_frames torch.Tensor: [N, H, W, C]
+        :param clip_size int: Number of frame per clip
+        :param stride int: Slider window step size
+        :return torch.Tensor: [NC, CS, H, W, C]
         """
-
         N = segment_frames.shape[0]
+ 
+        if N < clip_size:
+            pad = clip_size - N
+            segment_frames = F.pad(segment_frames, (0, 0, 0, 0, 0, 0, 0, pad))
+            N = segment_frames.shape[0]
+ 
         remain = (N - clip_size) % stride
         if remain != 0:
             pad = stride - remain
-            if pad >= remain: 
+            if pad >= remain:
                 segment_frames = segment_frames[: N - remain]
             else:
                 segment_frames = F.pad(segment_frames, (0, 0, 0, 0, 0, 0, 0, pad))
             N = segment_frames.shape[0]
-
-        clips = []
-        for end_idx in range(clip_size, N + 1, stride):
-            start_idx = end_idx - clip_size
-            clip = segment_frames[start_idx:end_idx]
-            clips.append(clip)
-
-        clips = torch.stack(clips, dim=0) # [NC, CS, H, W, C]
+ 
+        # [N, H, W, C] -> unfold(dim=0) -> [NC, H, W, C, CS] -> permute -> [NC, CS, H, W, C]
+        clips = segment_frames.unfold(0, clip_size, stride)
+        clips = clips.permute(0, 4, 1, 2, 3).contiguous()
         return clips
+
         
 
     @staticmethod
     def segment_generator(video_path: os.PathLike,
-                          clip_size: int,
-                          stride: int,
-                          max_clips_per_segment: int | None,
-                          min_clips_per_segment: int | None,
-                          number_of_segments: int,
-                          fps: int = 30,
-                          width: int = 224,
-                          height: int = 224,
-                          augmentation: v2 = None) -> tuple[Generator[torch.Tensor, None, None], int]:
-
+                           clip_size: int,
+                           stride: int,
+                           max_clips_per_segment: int | None,
+                           min_clips_per_segment: int | None,
+                           number_of_segments: int,
+                           fps: int = 30,
+                           width: int = 224,
+                           height: int = 224) -> tuple[Generator[torch.Tensor, None, None], int]:
+        """
+        """
         vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=4)
         org_fps = vr.get_avg_fps()
-        frame_indices = torch.arange(0, len(vr), step=org_fps/fps).long()
+        frame_indices = torch.arange(0, len(vr), step=org_fps / fps).long()
         total_frames = len(frame_indices)
-        
-        number_of_segments = get_number_of_segments(min_clips_per_segment, max_clips_per_segment, 
-                                                    number_of_segments, total_frames, clip_size, stride)
-            
+ 
+        number_of_segments = get_number_of_segments(min_clips_per_segment, max_clips_per_segment,
+                                                      number_of_segments, total_frames, clip_size, stride)
+ 
         if total_frames < number_of_segments * clip_size:
             raise VIDEO_TOO_SHORT_ERROR(video_path, total_frames, number_of_segments)
-        
+ 
         segment_size = total_frames // number_of_segments
-
+ 
         def _generator():
             for i in range(number_of_segments):
                 start_idx = i * segment_size
                 end_idx = start_idx + segment_size
-                
-                segment_indices = frame_indices[start_idx:end_idx]       # [T]
-                segment_frames = vr.get_batch(segment_indices).asnumpy() # [T, H, W, C] numpy.array uint8
-                segment_tensor = torch.from_numpy(segment_frames)        # [T, H, W, C] torch.Tensor uint8
-                segment_tensor = segment_tensor.float() / 255.0          # [T, H, W, C] float 0.0-1.0 Normed
-                segment_tensor = Video_Feature_Extractor.clip_generator( # [NC, CS, H, W, C] 
-                    segment_tensor, 
-                    clip_size, 
-                    stride
+ 
+                segment_indices = frame_indices[start_idx:end_idx]        # [T]
+                segment_frames = vr.get_batch(segment_indices).asnumpy()  # [T,H,W,C] uint8
+                segment_tensor = torch.from_numpy(segment_frames)         # uint8, CPU
+ 
+                segment_tensor = Video_Feature_Extractor.clip_generator(  # [NC,CS,H,W,C] uint8
+                    segment_tensor, clip_size, stride
                 )
-                NC, CS, H, W, C = segment_tensor.shape
-                if augmentation is not None:
-                    segment_tensor = segment_tensor.view(NC*CS, H, W, C)
-                    segment_tensor = segment_tensor.permute(0, 3, 1, 2) # [N, H, W, C] -> [N, C, H, W]
-                    segment_tensor = augmentation(segment_tensor)
-                    segment_tensor = segment_tensor.permute(0, 2, 3, 1) # [N, C, H, W] -> [N, H, W, C]
-                    segment_tensor = segment_tensor.view(NC, CS, H, W, C)
-                segment_tensor = segment_tensor.permute(0, 4, 1, 2, 3)
-                segment_tensor = segment_tensor.contiguous()
-                
-                yield segment_tensor
-
+                segment_tensor = segment_tensor.permute(0, 4, 1, 2, 3).contiguous()  # [NC,C,CS,H,W] uint8
+                yield segment_tensor.pin_memory()
+ 
         return _generator(), number_of_segments
 
-    def feature_extractor_forward(self, x:torch.Tensor):
-        # x is [B, NC, C, CS, H, W]. B is batch(segment), NC is Number of Clips, CS is Clip size.
+
+    def feature_extractor_forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_video: bool = False) -> torch.Tensor:
         B, NC, C, CS, H, W = x.shape
-        x = x.view(B*NC, C, CS, H, W) # model works shape like [B, C, T, H, W], T is temporal depth
-        x = self.feature_extractor(x) # [B, Dim, ...]
-        x = x.view(B, NC, -1) # [B, NC, Dim]
-        x = x.mean(1, keepdim=False) # [B, Dim]
-        return x
+        device = next(self.feature_extractor.parameters()).device
+        chunk_size = max(1, self.micro_batch_size)
+        feat_sum = None
+        
+        debug_augmented_clips = [] # n X [NS, chunk_size, C, CS, h, W]
+
+        for start in range(0, NC, chunk_size):
+            end = min(start + chunk_size, NC)
+            chunk = x[:, start:end]  # [B, nc, C, CS, H, W] uint8
+            b, nc = chunk.shape[0], chunk.shape[1]
+            
+            chunk = chunk.reshape(b * nc, C, CS, H, W)
+            chunk = chunk.to(device, non_blocking=True)
+            chunk = chunk.float().div_(255.0)
+            
+            if augmentation is not None:
+                n = chunk.shape[0]
+                chunk = chunk.permute(0, 2, 1, 3, 4).reshape(n * CS, C, H, W)
+                chunk = augmentation(chunk)
+                chunk = chunk.reshape(n, CS, C, H, W).permute(0, 2, 1, 3, 4).contiguous() 
+
+            if save_video:
+                chunk_debug = chunk.reshape(b, nc, C, CS, H, W)
+                debug_augmented_clips.append(chunk_debug.clone().cpu())
+                
+            feats = self.feature_extractor(chunk)  # [b*nc, Dim, ...]
+            feats = feats.view(b, nc, -1).float().sum(dim=1)
+            feat_sum = feats if feat_sum is None else feat_sum + feats
+            
+            del chunk, feats
+
+        x = feat_sum / NC
+        if debug_augmented_clips:
+            debug_augmented_clips = torch.concat(debug_augmented_clips, dim=1) # [NS, NC, C, CS, H, W]
+
+        return x, debug_augmented_clips
 
     def fc_layers_forward(self, x):
-        x = self.segment_ranker_model(x) # [B, 1]
+        x = self.segment_ranker_model(x)  # [B, 1]
         return x
-            
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+ 
+    def forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_debug_clip:bool=False) -> torch.Tensor:
         """
         Forward pass.
-        If `enable_feature_extractor`: expects x shape [NC, C, CS, H, W] -> outputs [B, D] or [B, 1]
         """
         if hasattr(self, "trt_engine"):
             return self.trt_inference(x)
-            
+        debug_frames = []
         if self.enable_feature_extractor:
-            x = self.feature_extractor_forward(x)
+            x, debug_frames = self.feature_extractor_forward(x, augmentation=augmentation, save_video=save_debug_clip)
         if self.enable_fc_layers:
             x = self.fc_layers_forward(x)
+ 
+        return x, debug_frames
 
-        return x
 
     @torch.no_grad()
     def analyze(self, 
@@ -328,7 +355,6 @@ class Video_Feature_Extractor(torch.nn.Module):
                     save_clips
                 )
 
-    # create_segments metodu orijinal halinde bırakılmıştır, aynı şekilde 1D interpolate işlemi devam edecektir.
     @torch.no_grad()
     def create_segments(self, 
                         scores:torch.Tensor,
@@ -602,65 +628,67 @@ class Video_Feature_Extractor(torch.nn.Module):
             raise MODEL_HAS_NO_CLASSIFIER_ERROR
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def extract_feats(extractor: Video_Feature_Extractor,
-                  video_paths: list,
-                  save_dir: str,
-                  batch_size: int = 4,
-                  imgsz: int|tuple = 224,
-                  fps: int = 30,
-                  augmentation = None,
-                  skip_log_path: str = None):
-
-
+                   video_paths: list,
+                   save_dir: str,
+                   batch_size: int = 4,
+                   imgsz: int | tuple = 224,
+                   fps: int = 30,
+                   augmentation=None,
+                   skip_log_path: str = None,
+                   save_debug_video:bool=False,
+                   log_every: int = 1):
+ 
     extractor.enable_feature_extractor = True
     extractor.enable_fc_layers = False
     H, W = imgsz if isinstance(imgsz, (tuple, list)) else (imgsz, imgsz)
-
+ 
     os.makedirs(save_dir, exist_ok=True)
     if skip_log_path is None:
         skip_log_path = os.path.join(save_dir, "skipped_videos.txt")
-
+ 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+ 
     num_gpus = torch.cuda.device_count()
     is_dp = num_gpus > 1
-
+ 
     if is_dp:
         extractor = torch.nn.DataParallel(extractor)
-    
+ 
     extractor = extractor.to("cuda")
     extractor.eval()
-
+ 
     core_model = extractor.module if is_dp else extractor
     len_videos = len(video_paths)
-
-    def inference(batch:torch.Tensor):
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            feats = extractor(batch) # [B, Dim]
-        del batch
-        return feats
-
+    all_debug_frames = []
+    def inference(batch: torch.Tensor):
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if not save_debug_video else torch.float32):
+            feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
+        all_debug_frames.append(debug_frames)
+        return feats, debug_frames
+ 
     def print_info(video_idx, vp, segment_idx, total_segments, segment):
         info = (
-            f"Video: {video_idx+1:04d}/{len_videos} | "
+            f"Video: {video_idx + 1:04d}/{len_videos} | "
             f"Video: {os.path.basename(vp)} | "
-            f"Segment: {segment_idx+1}/{total_segments} "
-            f"Shape: {segment.shape} "
+            f"Segment: {segment_idx + 1}/{total_segments} "
+            f"Shape: {tuple(segment.shape)} "
             f"Type: {segment.dtype} "
-            f"MaxVal: {segment.max()} "
-            f"MinVal: {segment.min()} "
         )
         print(info, end='\n', flush=True)
-
+ 
     for video_idx, vp in enumerate(video_paths):
         save_path = os.path.join(save_dir, os.path.basename(vp) + ".pt")
-        
+ 
         if os.path.exists(save_path):
-            print(f"Skipping.. (Already exists): {video_idx+1:04d}/{len_videos} -> {os.path.basename(vp)}", flush=True)
+            print(f"Skipping.. (Already exists): {video_idx + 1:04d}/{len_videos} -> {os.path.basename(vp)}", flush=True)
             continue
-
-        video_features = [] # N x [B, Dim]
-        batch_buffer = []   # B x [C, T, H, W]
-        
+ 
+        video_features = []  # N x [B, Dim]
+        batch_buffer = []    # B x [NC, C, CS, H, W] uint8
+ 
         try:
             segment_generator, total_segments = Video_Feature_Extractor.segment_generator(
                 video_path=vp,
@@ -672,52 +700,82 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 fps=fps,
                 width=W,
                 height=H,
-                augmentation = augmentation
             )
-
+ 
+            segment_idx = -1
             for segment_idx, segment in enumerate(segment_generator):
                 batch_buffer.append(segment)
-
+ 
                 if len(batch_buffer) == batch_size:
-                    # B X [C, T, H, W] -> [B, C, T, H, W]
-                    batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)                    
-                    feats = inference(batch_tensor)
-                    video_features.append(feats.detach().cpu().clone())
+                    batch_tensor = torch.stack(batch_buffer, dim=0)  # [B,NC,C,CS,H,W] uint8 CPU
+                    feats, debug_frames = inference(batch_tensor)
+                    video_features.append(feats.detach().cpu())
                     batch_buffer.clear()
-                    print_info(video_idx, vp, segment_idx, total_segments, segment)
-
+                    del batch_tensor, feats
+                    if segment_idx % log_every == 0:
+                        print_info(video_idx, vp, segment_idx, total_segments, segment)
+ 
             if len(batch_buffer) > 0:
-                batch_tensor = torch.stack(batch_buffer, dim=0).to("cuda", non_blocking=True)                    
-                feats = inference(batch_tensor)
-                video_features.append(feats.detach().cpu().clone())
+                batch_tensor = torch.stack(batch_buffer, dim=0)
+                feats, debug_frames = inference(batch_tensor)
+                video_features.append(feats.detach().cpu())
                 batch_buffer.clear()
                 print_info(video_idx, vp, segment_idx, total_segments, segment)
-
+                del batch_tensor, feats
+ 
             print()
-
+ 
             if len(video_features) > 0:
-                # N x [B, Dim] -> [NxB, Dim]
-                video_feature_tensor = torch.cat(video_features, dim=0)  
+                video_feature_tensor = torch.cat(video_features, dim=0)
                 data = {
-                    "feats":video_feature_tensor,
-                    "model":core_model.feature_extractor.__class__.__name__.lower(),
-                    "clip_size": 24,
+                    "feats": video_feature_tensor,
+                    "model": core_model.feature_extractor.__class__.__name__.lower(),
+                    "clip_size": core_model.clip_size,
                     "overlap": core_model.overlap,
                     "max_segment_size": core_model.max_clip_per_segment,
                     "min_segment_size": core_model.min_clip_per_segment,
                     "fps": fps,
                     "number_of_segment": core_model.number_of_segments,
                     "width": W,
-                    "height": H
+                    "height": H,
                 }
                 torch.save(data, save_path)
             else:
                 raise NO_SEGMENT_ERROR
 
+            if save_debug_video and all_debug_frames:
+                full_segment = torch.cat(all_debug_frames, dim=0).to(torch.float32) # [NS, NC, C, CS, H, W]
+                NS, NC, C, CS, H, W = full_segment.shape
+                full_segment = full_segment.permute(0, 1, 3, 4, 5, 2) # [NS, NC, CS, H, W, C]
+                full_segment = (full_segment * 255.0).clamp(0, 255).to(torch.uint8)
+                full_segment_np = full_segment.cpu().contiguous().numpy()
+
+                debug_save_path = os.path.join(save_dir, f"{os.path.splitext(os.path.basename(vp))[0]}_debug.mp4")
+                
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(debug_save_path, fourcc, fps, (W, H))
+
+                for segment_idx in range(NS):
+                    for clip_idx in range(NC):
+                        for frame_idx in range(CS):
+                            frame_rgb = full_segment_np[segment_idx, clip_idx, frame_idx]
+                            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                            cv2.putText(frame_bgr, f"Seg:{segment_idx+1}/{total_segments}\nClip:{clip_idx+1}/{NC}", 
+                                        (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                            out.write(frame_bgr)
+                            del frame_rgb, frame_bgr
+
+                out.release()
+                
+                print(f"[DEBUG] Video olarak kaydedildi: {debug_save_path}")
+                
+                all_debug_frames.clear()
+                del full_segment, full_segment_np
+ 
             del video_feature_tensor, video_features, segment_generator, data
             gc.collect()
             torch.cuda.empty_cache()
-            
+ 
         except Exception as e:
             with open(skip_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{vp}\t{str(e)}\n")
