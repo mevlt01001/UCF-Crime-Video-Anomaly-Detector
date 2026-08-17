@@ -674,7 +674,8 @@ def extract_feats(extractor: Video_Feature_Extractor,
     len_videos = len(video_paths)
     all_debug_frames = []
     def inference(batch: torch.Tensor):
-        feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if not save_debug_video else torch.float32):
+            feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
         all_debug_frames.append(debug_frames)
         return feats, debug_frames
  
