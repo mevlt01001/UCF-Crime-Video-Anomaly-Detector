@@ -204,7 +204,7 @@ class Video_Feature_Extractor(torch.nn.Module):
 
     def feature_extractor_forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_video: bool = False) -> torch.Tensor:
         B, NC, C, CS, H, W = x.shape
-        device = x.device
+        device = x.device if x.is_cuda else next(self.parameters()).device
         chunk_size = max(1, self.micro_batch_size)
         feat_sum = None
         
@@ -664,7 +664,6 @@ def extract_feats(extractor: Video_Feature_Extractor,
     len_videos = len(video_paths)
     all_debug_frames = []
     def inference(batch: torch.Tensor):
-        batch = batch.to("cuda", non_blocking=True)
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if not save_debug_video else torch.float32):
             feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
         all_debug_frames.append(debug_frames)
