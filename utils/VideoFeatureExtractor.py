@@ -184,22 +184,26 @@ class Video_Feature_Extractor(torch.nn.Module):
  
         segment_size = total_frames // number_of_segments
  
-        def _generator():
-            for i in range(number_of_segments):
-                start_idx = i * segment_size
-                end_idx = start_idx + segment_size
+        def _generator(video_reader):
+            try:
+                for i in range(number_of_segments):
+                    start_idx = i * segment_size
+                    end_idx = start_idx + segment_size
+     
+                    segment_indices = frame_indices[start_idx:end_idx]        
+                    segment_frames = video_reader.get_batch(segment_indices).asnumpy()  
+                    segment_tensor = torch.from_numpy(segment_frames)         
+     
+                    segment_tensor = Video_Feature_Extractor.clip_generator(  
+                        segment_tensor, clip_size, stride
+                    )
+                    segment_tensor = segment_tensor.permute(0, 4, 1, 2, 3).contiguous()  
+                    
+                    yield segment_tensor
+            finally:
+                del video_reader
  
-                segment_indices = frame_indices[start_idx:end_idx]        # [T]
-                segment_frames = vr.get_batch(segment_indices).asnumpy()  # [T,H,W,C] uint8
-                segment_tensor = torch.from_numpy(segment_frames)         # uint8, CPU
- 
-                segment_tensor = Video_Feature_Extractor.clip_generator(  # [NC,CS,H,W,C] uint8
-                    segment_tensor, clip_size, stride
-                )
-                segment_tensor = segment_tensor.permute(0, 4, 1, 2, 3).contiguous()  # [NC,C,CS,H,W] uint8
-                yield segment_tensor.pin_memory()
- 
-        return _generator(), number_of_segments
+        return _generator(vr), number_of_segments
 
 
     def feature_extractor_forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_video: bool = False) -> torch.Tensor:
