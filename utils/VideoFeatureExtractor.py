@@ -48,6 +48,7 @@ empty model cannot be exported! (enable_feature_extractor: {enable_feature_extra
 ONNX_PARSING_ERROR = lambda filename : RuntimeError(f"ONNX Parsing error for model: {filename}")
 TRT_RUNTIME_GENERATOR_FAILURE = RuntimeError("TRT Plan generation failed!")
 MODEL_HAS_NO_CLASSIFIER_ERROR = ValueError("The feature extractor model does not have a classifier or head attribute.")
+MAX_VIDEO_MINUTE_ERROR = lambda max_video_minute, video_minute: MemoryError(f"Maximum alloved video lenght {max_video_minute} min. Got video lenght {video_minute} min!")
 NO_SEGMENT_ERROR = ValueError("There is no segment in this video.")
 VIDEO_TOO_SHORT_ERROR = lambda vp, f, s : ValueError(f"Video {vp} is too short ({f} frames) to be divided into {s} segments.")
 
@@ -167,6 +168,7 @@ class Video_Feature_Extractor(torch.nn.Module):
                            min_clips_per_segment: int | None,
                            number_of_segments: int,
                            fps: int = 30,
+                           max_video_minute:int = 20,
                            width: int = 224,
                            height: int = 224) -> tuple[Generator[torch.Tensor, None, None], int]:
         """
@@ -175,18 +177,21 @@ class Video_Feature_Extractor(torch.nn.Module):
         org_fps = vr.get_avg_fps()
         frame_indices = torch.arange(0, len(vr), step=org_fps / fps).long()
         total_frames = len(frame_indices)
+        video_minute = (total_frames/fps)/60
+        total_segments = get_number_of_segments(min_clips_per_segment, max_clips_per_segment,
+                                                number_of_segments, total_frames, clip_size, stride)
+
+        if max_video_minute < video_minute:
+            raise MAX_VIDEO_MINUTE_ERROR(max_video_minute, video_minute)
  
-        number_of_segments = get_number_of_segments(min_clips_per_segment, max_clips_per_segment,
-                                                      number_of_segments, total_frames, clip_size, stride)
+        if total_frames < total_segments * clip_size:
+            raise VIDEO_TOO_SHORT_ERROR(video_path, total_frames, total_segments)
  
-        if total_frames < number_of_segments * clip_size:
-            raise VIDEO_TOO_SHORT_ERROR(video_path, total_frames, number_of_segments)
- 
-        segment_size = total_frames // number_of_segments
+        segment_size = total_frames // total_segments
  
         def _generator(video_reader):
             try:
-                for i in range(number_of_segments):
+                for i in range(total_segments):
                     start_idx = i * segment_size
                     end_idx = start_idx + segment_size
      
@@ -203,7 +208,7 @@ class Video_Feature_Extractor(torch.nn.Module):
             finally:
                 del video_reader
  
-        return _generator(vr), number_of_segments
+        return _generator(vr), total_segments
 
 
     def feature_extractor_forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_video: bool = False) -> torch.Tensor:
@@ -639,6 +644,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                    batch_size: int = 4,
                    imgsz: int | tuple = 224,
                    fps: int = 30,
+                   max_video_minute:int = 20,
                    augmentation=None,
                    skip_log_path: str = None,
                    save_debug_video:bool=False,
@@ -668,8 +674,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
     len_videos = len(video_paths)
     all_debug_frames = []
     def inference(batch: torch.Tensor):
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if not save_debug_video else torch.float32):
-            feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
+        feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
         all_debug_frames.append(debug_frames)
         return feats, debug_frames
  
@@ -677,9 +682,9 @@ def extract_feats(extractor: Video_Feature_Extractor,
         info = (
             f"Video: {video_idx + 1:04d}/{len_videos} | "
             f"Video: {os.path.basename(vp)} | "
-            f"Segment: {segment_idx + 1}/{total_segments} "
-            f"Shape: {tuple(segment.shape)} "
-            f"Type: {segment.dtype} "
+            f"Segment: {segment_idx + 1:03d}/{total_segments} | "
+            f"Clip Size: {segment.shape[2]} | "
+            f"Number of Clips: {segment.shape[0]} "
         )
         print(info, end='\n', flush=True)
  
@@ -702,6 +707,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
                 min_clips_per_segment=core_model.min_clip_per_segment,
                 number_of_segments=core_model.number_of_segments,
                 fps=fps,
+                max_video_minute=max_video_minute,
                 width=W,
                 height=H,
             )
