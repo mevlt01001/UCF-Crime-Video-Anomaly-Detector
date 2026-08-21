@@ -118,14 +118,8 @@ class Video_Feature_Extractor(torch.nn.Module):
         self.segment_ranker_model = SegmentRankingModel(self.feature_dim)
         if fc_layer_checkpoint:
             self.segment_ranker_model.load_state_dict(fc_layer_checkpoint)
-
-        self.video_preprocess = v2.Compose([
-            v2.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0), antialias=True),
-            v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            v2.RandomApply([v2.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.5))], p=0.15),
-            AddGaussianNoise(mean=0.0, std=0.03, p=0.15),
-            AddSaltAndPepperNoise(amount=0.01, p=0.10),
-        ])
+        self.std = model_weights[self.video_classifier_name].DEFAULT.transforms().std
+        self.mean = model_weights[self.video_classifier_name].DEFAULT.transforms().mean
 
     @staticmethod
     def clip_generator(segment_frames: torch.Tensor,
@@ -216,54 +210,78 @@ class Video_Feature_Extractor(torch.nn.Module):
         device = x.device if x.is_cuda else next(self.parameters()).device
         chunk_size = max(1, self.micro_batch_size)
         feat_sum = None
-        
-        debug_augmented_clips = [] # n X [NS, chunk_size, C, CS, h, W]
+        x = x.to(device, non_blocking=True).float().div_(255.0)
+
+        if augmentation:
+            augmented_x = []
+            for b in range(B):
+                segment = x[b].permute(0, 2, 1, 3, 4).reshape(NC*CS, C, H, W) # [NC, C, CS, H, W] -> [NC, CS, C, H, W] -> [N, C, H, W]
+                segment = augmentation(segment)
+                segment = segment.reshape(NC, CS, C, H, W).permute(0, 2, 1, 3, 4) # [N, C, H, W] -> [NC, CS, C, H, W] -> [NC, C, CS, H, W]
+                augmented_x.append(segment)
+            x = torch.stack(augmented_x, dim=0) # [B, NC, CS, C, H, W]
+
+        debug_clips = [] # n X [B, chunk_size, C, CS, H, W]
 
         for start in range(0, NC, chunk_size):
             end = min(start + chunk_size, NC)
-            chunk = x[:, start:end]  # [B, nc, C, CS, H, W] uint8
-            b, nc = chunk.shape[0], chunk.shape[1]
+            chunk = x[:, start:end]  # [B, NCC, C, CS, H, W] uint8
+            NCC = chunk.shape[1] # Number of Clips per Chunk
             
-            chunk = chunk.reshape(b * nc, C, CS, H, W)
-            chunk = chunk.to(device, non_blocking=True)
-            chunk = chunk.float().div_(255.0)
-            
-            if augmentation is not None:
-                n = chunk.shape[0]
-                chunk = chunk.permute(0, 2, 1, 3, 4).reshape(n * CS, C, H, W)
-                chunk = augmentation(chunk)
-                chunk = chunk.reshape(n, CS, C, H, W).permute(0, 2, 1, 3, 4).contiguous() 
+            chunk = chunk.reshape(B * NCC, C, CS, H, W)
 
             if save_video:
-                chunk_debug = chunk.reshape(b, nc, C, CS, H, W)
-                debug_augmented_clips.append(chunk_debug.clone().cpu())
-                
-            feats = self.feature_extractor(chunk)  # [b*nc, Dim, ...]
-            feats = feats.view(b, nc, -1).float().sum(dim=1)
+                chunk_debug = chunk.reshape(B, NCC, C, CS, H, W)
+                debug_clips.append(chunk_debug.clone().cpu())
+
+            mean = torch.tensor(self.mean, device=device).view(1, 3, 1, 1, 1)
+            std = torch.tensor(self.std, device=device).view(1, 3, 1, 1, 1)
+            chunk = (chunk - mean) / std
+
+            # [B*NCC, Dim, ...]
+            if hasattr(self, "trt_engine_feat") and self.trt_engine_feat is not None:
+                feats = self.trt_inference_feat(chunk) 
+            else:
+                feats = self.feature_extractor(chunk)
+
+            feats = feats.view(B, NCC, -1).float().sum(dim=1)
             feat_sum = feats if feat_sum is None else feat_sum + feats
             
             del chunk, feats
 
         x = feat_sum / NC
-        if debug_augmented_clips:
-            debug_augmented_clips = torch.concat(debug_augmented_clips, dim=1) # [NS, NC, C, CS, H, W]
+        if debug_clips:
+            debug_clips = torch.concat(debug_clips, dim=1) # [B, NC, C, CS, H, W]
 
-        return x, debug_augmented_clips
+        return x, debug_clips
 
     def fc_layers_forward(self, x):
-        x = self.segment_ranker_model(x)  # [B, 1]
+        # x.shape is [B, dim]
+        # x.shape is [B, dim]
+        if hasattr(self, "trt_engine_fc") and self.trt_engine_fc is not None:
+            x = self.trt_inference_fc(x)
+        else:
+            x = self.segment_ranker_model(x)  # [B, 1]
+            
         return x
  
     def forward(self, x: torch.Tensor, augmentation: v2.Compose = None, save_debug_clip:bool=False) -> torch.Tensor:
         """
-        Forward pass.
+        :param x  torch.Tensor: Input data to process by model. **Shape information:** \
+            if `enable_feature_extractor` its shape must be `[B, NC, C, CS, H, W]`(`B`: Number of Segemnts, `NC`: Number of Clips, `CS`: Clip Size) \
+                if not `enable_feature_extractor` and `enable_fc_layers` its shape must be `[B, Dim]`(`B`: Number of Segemnts, `Dim`: Feature Dimension Size)
+        :param augmentation torchvision.transforms.v2.Compose: Augmentation compose from torchvision.transforms.v2.Compose. Used when feature extracting.
+        :param save_debug_clip bool: Flag indicating whether to visualize input data passed to the 'feature_extractor'.
+        :return tuple(torch.Tensor, list): Returns output data and debug frames. Debug frames will be empty If not `save_debug_clip`.\
+            If `enable_fc_layers` the output shape will be [B, 1] and stands for anomaly scores per segment. if not `enable_fc_layers` and `enable_feature_extractor` \
+            the output shape will be [B, Dim] and it stands for temporal feature per segment.
         """
-        if hasattr(self, "trt_engine"):
-            return self.trt_inference(x)
         debug_frames = []
         if self.enable_feature_extractor:
+            # x.shape = [B, NC, C, CS, H, W] -> [B, Dim]
             x, debug_frames = self.feature_extractor_forward(x, augmentation=augmentation, save_video=save_debug_clip)
         if self.enable_fc_layers:
+            # x.shape = [B, Dim] -> [B, 1]
             x = self.fc_layers_forward(x)
  
         return x, debug_frames
@@ -294,40 +312,54 @@ class Video_Feature_Extractor(torch.nn.Module):
                                         dtype=torch.float32, 
                                         non_blocking=True)
             # 0-1 Normalization
-            mini_batches = mini_batches.div_(255.0)
+            mini_batches = mini_batches.div_(255.0)    
             return mini_batches
 
         def inference(mini_batches):
             mini_batches = batch_flush(mini_batches)
+            
             if self.trt_engine is not None:
-                score = self.forward(mini_batches)
+                score, _ = self.forward(mini_batches) 
             else:
                 with torch.amp.autocast(device_type=device, dtype=torch.float16):
-                    score = self.forward(mini_batches)
+                    score, _ = self.forward(mini_batches) 
+                    
             return score
 
-        device = next(self.parameters()).device.type
+        if hasattr(self, "trt_engine_fc"): 
+            device = "cuda"
+        else:
+            device = next(self.parameters()).device.type
         if hasattr(self, "trt_engine") and self.trt_engine is not None:
             device = "cuda"
 
-
         segment_generator, number_of_segments = Video_Feature_Extractor.segment_generator(
-            video_path, self.clip_size, self.stride, self.max_clip_per_segment, self.min_clip_per_segment,
-            self.number_of_segments, FPS, width, height, None
+            video_path=video_path, 
+            clip_size=self.clip_size, 
+            stride=self.stride, 
+            max_clips_per_segment=self.max_clip_per_segment, 
+            min_clips_per_segment=self.min_clip_per_segment,
+            number_of_segments=self.number_of_segments, 
+            fps=FPS, 
+            width=width, 
+            height=height
         )
 
         total_segments = number_of_segments
         scores = [] # N x [B, 1]
-        mini_batches = [] # N x [C, T, H, W]
+        mini_batches = [] # N x [NC, C, CS, H, W]
         
         pbar = tqdm(total=total_segments, desc=f"Processing {os.path.basename(video_path)}")
         
         try:
             for segment in segment_generator:
+                print(segment.shape)
                 mini_batches.append(segment)
                 
                 if len(mini_batches) == batch_size:
+                    print("processin1")
                     score = inference(mini_batches) # [B,1]
+                    print(score)
                     scores.append(score.detach().float().cpu())
                     
                     pbar.update(batch_size)
@@ -337,6 +369,7 @@ class Video_Feature_Extractor(torch.nn.Module):
                     torch.cuda.empty_cache()
 
             if mini_batches:
+                print("processin last")
                 score = inference(mini_batches)
                 scores.append(score.detach().float().cpu())
                 
@@ -470,130 +503,190 @@ class Video_Feature_Extractor(torch.nn.Module):
 
         return final_segments
 
-    def trt_inference(self, segment:torch.Tensor):
-        segment = segment.contiguous().to(device="cuda", dtype=torch.float32)
-        self.trt_context.set_input_shape("input", tuple(segment.shape))
-        output_shape = tuple(self.trt_context.get_tensor_shape("output"))
-        output = torch.empty(output_shape, dtype=torch.float32, device=segment.device)
+    def trt_inference_feat(self, x_chunk: torch.Tensor) -> torch.Tensor:
+        """
+        Executes TensorRT inference for the Feature Extractor.
+        """
+        x_chunk = x_chunk.contiguous().to(device="cuda", dtype=torch.float32)
+        self.trt_context_feat.set_input_shape("x", tuple(x_chunk.shape))
+        output_shape = tuple(self.trt_context_feat.get_tensor_shape("y"))
+        output = torch.empty(output_shape, dtype=torch.float32, device=x_chunk.device)
 
-        self.trt_context.set_tensor_address("input", int(segment.data_ptr()))
-        self.trt_context.set_tensor_address("output", int(output.data_ptr()))
+        self.trt_context_feat.set_tensor_address("x", int(x_chunk.data_ptr()))
+        self.trt_context_feat.set_tensor_address("y", int(output.data_ptr()))
         
         stream = torch.cuda.current_stream().cuda_stream
-        self.trt_context.execute_async_v3(stream_handle=stream)
+        self.trt_context_feat.execute_async_v3(stream_handle=stream)
         torch.cuda.synchronize()
-        
         return output
 
-    def export_onnx(self, filename:str, imgsz:tuple|int, batch_size:int, dummy_t:int=16):
+    def trt_inference_fc(self, features: torch.Tensor) -> torch.Tensor:
         """
-        Added `dummy_t` parameter and set Axis 2 to dynamic "T".
+        Executes TensorRT inference for the Fully Connected (Segment Ranker) layer.
+        """
+        features = features.contiguous().to(device="cuda", dtype=torch.float32)
+        self.trt_context_fc.set_input_shape("x", tuple(features.shape))
+        output_shape = tuple(self.trt_context_fc.get_tensor_shape("y"))
+        output = torch.empty(output_shape, dtype=torch.float32, device=features.device)
+
+        self.trt_context_fc.set_tensor_address("x", int(features.data_ptr()))
+        self.trt_context_fc.set_tensor_address("y", int(output.data_ptr()))
+        
+        stream = torch.cuda.current_stream().cuda_stream
+        self.trt_context_fc.execute_async_v3(stream_handle=stream)
+        torch.cuda.synchronize()
+        return output
+
+    def export_onnx(self, filename: str, imgsz: tuple|int, batch_size: int):
+        """
+        Exports both Feature Extractor and FC Layers (Segment Ranker) to separate ONNX files.
+        
+        :param filename os.PathLike: Base filename to save onnx files. Will automatically append `_feat.onnx` and `_fc.onnx`.
+        :param imgsz tuple|int: Video frame size. **If tuple** `H, W = imgsz` **if int** `H, W = imgsz, imgsz`
+        :param batch_size int: Number of Segments to inference at a time (Used for FC max batch size estimation).
+        :return tuple: `tuple(TRT_MAX_BATCH, BATCH_SIZE, CS, H, W, DIM)` to pass boundary data to TRT Builder.
         """
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         import onnx, onnxsim
 
-        B = batch_size
-        DIM = self.feature_dim
+        CS = self.clip_size
+        TRT_MAX_BATCH = self.micro_batch_size * batch_size
         H, W = imgsz if isinstance(imgsz, tuple) else (imgsz, imgsz)
+        DIM = self.feature_dim
 
-        # Dynamic T shape initialization
-        dummy = torch.rand(B, 3, dummy_t, H, W, device="cpu")
+        feat_onnx_path = filename + "_feat.onnx"
+        fc_onnx_path = filename + "_fc.onnx"
 
-        if not self.enable_feature_extractor and self.enable_fc_layers:
-            dummy = torch.rand(B, DIM)
-        elif not (self.enable_feature_extractor or self.enable_fc_layers):
-            raise EMPTY_MODEL_EXPORT_ERROR(self.enable_feature_extractor,
-                                           self.enable_fc_layers)
-
-        torch.onnx.export(
-            self.to("cpu"),
-            dummy,
-            filename,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_shapes = {'input': {0: 'B', 2: 'T'}} if self.enable_feature_extractor else {'input': {0: 'B'}},
-            opset_version=19,
-            do_constant_folding=True,
-        )
-
-        onnx_model = onnx.load(filename)
-        onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-        
+        # Export Feature Extractor
         if self.enable_feature_extractor:
-            onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"input": [B, 3, dummy_t, H, W]})
-        else:
-            onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"input": [B, DIM]})
-            
-        onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-        onnx.save(onnx_model, filename)
+            dummy_feat = torch.rand(TRT_MAX_BATCH, 3, CS, H, W, device="cpu")
+            if getattr(self, "trt_engine_feat", None):
+                del self.trt_engine_feat
+                
+            torch.onnx.export(
+                self.feature_extractor.to("cpu"),
+                dummy_feat,
+                feat_onnx_path,
+                input_names=["x"],
+                output_names=["y"],
+                dynamic_axes={'x': {0: 'Clip_Batch'}},
+                opset_version=19,
+                do_constant_folding=True,
+            )
 
-        return B, H, W, DIM
+            onnx_model = onnx.load(feat_onnx_path)
+            onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+            onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"x": [TRT_MAX_BATCH, 3, CS, H, W]})
+            onnx.save(onnx_model, feat_onnx_path)
 
-    def export_trt(self, file_name, imgsz, batch_size, min_t=4, max_t=1024):
+        # 2. Export FC Layers
+        if self.enable_fc_layers:
+            dummy_fc = torch.rand(batch_size, DIM, device="cpu")
+            if getattr(self, "trt_engine_fc", None):
+                del self.trt_engine_fc
+
+            torch.onnx.export(
+                self.segment_ranker_model.to("cpu"),
+                dummy_fc,
+                fc_onnx_path,
+                input_names=["x"],
+                output_names=["y"],
+                dynamic_axes={'x': {0: 'Segment_Batch'}},
+                opset_version=19,
+                do_constant_folding=True,
+            )
+
+            onnx_model_fc = onnx.load(fc_onnx_path)
+            onnx_model_fc = onnx.shape_inference.infer_shapes(onnx_model_fc)
+            onnx_model_fc, check = onnxsim.simplify(onnx_model_fc, test_input_shapes={"x": [batch_size, DIM]})
+            onnx.save(onnx_model_fc, fc_onnx_path)
+
+        return TRT_MAX_BATCH, batch_size, CS, H, W, DIM
+
+    def export_trt(self, file_name: os.PathLike, imgsz: int|tuple[int, int], batch_size: int):
         """
-        TensorRT expects bounds for dynamic spatial/temporal sizes. 
-        min_t and max_t sets lower/upper bounds for temporal chunks.
+        Builds separate TensorRT plan files for both Feature Extractor and FC layers.
+        
+        :param file_name os.PathLike: Base filename to save TensorRT plan files.
+        :param imgsz tuple|int: Video frame size. **If tuple** `H, W = imgsz` **if int** `H, W = imgsz, imgsz`
+        :param batch_size int: Number of Segments to inference at a time.
         """
         self.eval().cpu()
         import tensorrt as trt
         TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
         
-        BUILDER = trt.Builder(TRT_LOGGER)
-        NETWORK = BUILDER.create_network()
-        PARSER = trt.OnnxParser(NETWORK, TRT_LOGGER)
-        
-        CONFIG = BUILDER.create_builder_config()
-        OPT_PROFILE = BUILDER.create_optimization_profile()
-        onnx_filename = file_name+".onnx"
-        trt_filename = file_name+".plan"
+        feat_plan_path = file_name + "_feat.plan"
+        fc_plan_path = file_name + "_fc.plan"
 
-        if(os.path.exists(trt_filename)):
-            # If plan file already exists.
-            return self.load_trt(trt_filename, trt.Runtime(TRT_LOGGER))
+        if os.path.exists(feat_plan_path) and os.path.exists(fc_plan_path):
+            return self.load_trt(file_name, trt.Runtime(TRT_LOGGER))
             
-        B, H, W, DIM = self.export_onnx(onnx_filename, imgsz, batch_size)
+        TRT_MAX_BATCH, BATCH_SIZE, CS, H, W, DIM = self.export_onnx(file_name, imgsz, batch_size)
 
-        if not PARSER.parse_from_file(onnx_filename):
-            for error in range(PARSER.num_errors):
-                print(PARSER.get_error(error))
-            raise ONNX_PARSING_ERROR(onnx_filename)
-
-        if not self.enable_feature_extractor and self.enable_fc_layers:
-            min_shape = (1, DIM)
-            max_shape = (B, DIM)
-            OPT_PROFILE.set_shape("input", min_shape, max_shape, max_shape)
-        elif self.enable_feature_extractor:
-            min_shape = (1, 3, min_t, H, W)
-            opt_shape = (B, 3, 16, H, W)
-            max_shape = (B, 3, max_t, H, W)
-            OPT_PROFILE.set_shape("input", min_shape, opt_shape, max_shape)
-        else:
-            raise EMPTY_MODEL_EXPORT_ERROR(self.enable_feature_extractor,
-                                            self.enable_fc_layers)
-        
-        CONFIG.add_optimization_profile(OPT_PROFILE)
-        engine_bytes = BUILDER.build_serialized_network(NETWORK, CONFIG)
-        
-        if engine_bytes is None:
-            raise TRT_RUNTIME_GENERATOR_FAILURE
-
-        with open(trt_filename, "wb") as f:
-            f.write(engine_bytes)
-
-        self.load_trt(trt_filename, trt.Runtime(TRT_LOGGER))
+        def build_engine(onnx_path, plan_path, min_shape, opt_shape, max_shape):
+            BUILDER = trt.Builder(TRT_LOGGER)
+            NETWORK = BUILDER.create_network()
+            PARSER = trt.OnnxParser(NETWORK, TRT_LOGGER)
+            CONFIG = BUILDER.create_builder_config()
+            OPT_PROFILE = BUILDER.create_optimization_profile()
             
-    def load_trt(self, trt_path:os.PathLike, runtime):
-        """
-        Loads TensorRT engine file already generated before. 
-        """
-        with open(trt_path, 'rb') as f:
-            self.trt_engine = runtime.deserialize_cuda_engine(f.read())
-        self.trt_context = self.trt_engine.create_execution_context()
+            if not PARSER.parse_from_file(onnx_path):
+                for error in range(PARSER.num_errors):
+                    print(PARSER.get_error(error))
+                raise Exception(f"ONNX Parsing Error in: {onnx_path}")
+            
+            OPT_PROFILE.set_shape("x", min_shape, opt_shape, max_shape)
+            CONFIG.add_optimization_profile(OPT_PROFILE)
+            
+            engine_bytes = BUILDER.build_serialized_network(NETWORK, CONFIG)
+            if engine_bytes is None:
+                raise Exception(f"TRT Plan generation failed for: {onnx_path}")
 
-        if hasattr(self, 'feature_extractor'):
-            del self.feature_extractor
-            del self.enable_fc_layers
-            torch.cuda.empty_cache()
+            with open(plan_path, "wb") as f:
+                f.write(engine_bytes)
+
+        if self.enable_feature_extractor:
+            build_engine(
+                file_name + "_feat.onnx", feat_plan_path,
+                min_shape=(1, 3, CS, H, W),
+                opt_shape=(max(1, TRT_MAX_BATCH // 2), 3, CS, H, W),
+                max_shape=(TRT_MAX_BATCH, 3, CS, H, W)
+            )
+
+        if self.enable_fc_layers:
+            build_engine(
+                file_name + "_fc.onnx", fc_plan_path,
+                min_shape=(1, DIM),
+                opt_shape=(max(1, BATCH_SIZE // 2), DIM),
+                max_shape=(BATCH_SIZE, DIM)
+            )
+
+        self.load_trt(file_name, trt.Runtime(TRT_LOGGER))
+            
+    def load_trt(self, file_name: os.PathLike, runtime):
+        """
+        Loads TensorRT engine files already generated before and frees up VRAM by deleting PyTorch models. 
+        """
+        feat_plan_path = file_name + "_feat.plan"
+        fc_plan_path = file_name + "_fc.plan"
+
+        if self.enable_feature_extractor and os.path.exists(feat_plan_path):
+            with open(feat_plan_path, 'rb') as f:
+                self.trt_engine_feat = runtime.deserialize_cuda_engine(f.read())
+            self.trt_context_feat = self.trt_engine_feat.create_execution_context()
+            
+            if hasattr(self, 'feature_extractor'):
+                del self.feature_extractor
+
+        if self.enable_fc_layers and os.path.exists(fc_plan_path):
+            with open(fc_plan_path, 'rb') as f:
+                self.trt_engine_fc = runtime.deserialize_cuda_engine(f.read())
+            self.trt_context_fc = self.trt_engine_fc.create_execution_context()
+            
+            if hasattr(self, 'segment_ranker_model'):
+                del self.segment_ranker_model
+
+        torch.cuda.empty_cache()
 
     def __set_video_classifier(self, video_classifier:str|MViT|VideoResNet|S3D|SwinTransformer3d):
         """
@@ -603,6 +696,7 @@ class Video_Feature_Extractor(torch.nn.Module):
             # If specified model by name in formed str
             if video_classifier.lower() in model_creaters.keys():
             # If specified model name available
+                self.video_classifier_name = video_classifier.lower()
                 self.feature_extractor = model_creaters[video_classifier](weights=model_weights[video_classifier].DEFAULT)
             else: 
                 # If specified model name does not available
@@ -610,6 +704,7 @@ class Video_Feature_Extractor(torch.nn.Module):
         elif isinstance (video_classifier, (MViT | VideoResNet | S3D | SwinTransformer3d)):
             # If Specified model formed its class form
             self.feature_extractor = video_classifier
+            self.video_classifier_name = video_classifier.__class__.__name__.lower()
         else:
             # If specified model does not met any condition:
              raise ValueError(MODEL_SPECIFY_ERROR(video_classifier))
@@ -677,7 +772,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if not save_debug_video else torch.float32):
             feats, debug_frames = extractor(batch, augmentation, save_debug_video)  # [B, Dim]
         all_debug_frames.append(debug_frames)
-        return feats, debug_frames
+        return feats
  
     def print_info(video_idx, vp, segment_idx, total_segments, segment):
         info = (
@@ -719,7 +814,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
  
                 if len(batch_buffer) == batch_size:
                     batch_tensor = torch.stack(batch_buffer, dim=0)  # [B,NC,C,CS,H,W] uint8 CPU
-                    feats, debug_frames = inference(batch_tensor)
+                    feats = inference(batch_tensor)
                     video_features.append(feats.detach().cpu())
                     batch_buffer.clear()
                     del batch_tensor, feats
@@ -728,7 +823,7 @@ def extract_feats(extractor: Video_Feature_Extractor,
  
             if len(batch_buffer) > 0:
                 batch_tensor = torch.stack(batch_buffer, dim=0)
-                feats, debug_frames = inference(batch_tensor)
+                feats = inference(batch_tensor)
                 video_features.append(feats.detach().cpu())
                 batch_buffer.clear()
                 print_info(video_idx, vp, segment_idx, total_segments, segment)

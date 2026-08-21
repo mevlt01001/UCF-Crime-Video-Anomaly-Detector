@@ -202,31 +202,23 @@ def generate_frames(video_path: os.PathLike,
     return frames, actual_start_sec, actual_end_sec
 
 class AddGaussianNoise(torch.nn.Module):
-    def __init__(self, mean=0.0, std=0.04, p=0.15):
+    def __init__(self, mean=0.0, std=0.03, p=0.15):
         super().__init__()
-        self.mean = mean
-        self.std = std
-        self.p = p 
+        self.mean, self.std, self.p = mean, std, p
 
-    def forward(self, clip):
+    def forward(self, img):
         if torch.rand(1).item() < self.p:
-            noise = torch.randn_like(clip) * self.std + self.mean
-            return torch.clamp(clip + noise, 0.0, 1.0)
-        return clip
+            return torch.clamp(img + torch.randn_like(img) * self.std + self.mean, 0.0, 1.0)
+        return img
 
 class AddSaltAndPepperNoise(torch.nn.Module):
-    def __init__(self, amount=0.015, p=0.10):
+    def __init__(self, amount=0.01, p=0.15):
         super().__init__()
-        self.amount = amount  
-        self.p = p  
+        self.amount, self.p = amount, p
 
-    def forward(self, clip):
+    def forward(self, img):
         if torch.rand(1).item() < self.p:
-            T, C, H, W = clip.shape
-
-            rand_mask = torch.rand((T, 1, H, W), device=clip.device, dtype=clip.dtype)
-
-            clip = torch.where(rand_mask < (self.amount / 2), torch.ones_like(clip), clip)
-            clip = torch.where(rand_mask > (1.0 - (self.amount / 2)), torch.zeros_like(clip), clip)
-            
-        return clip
+            noise = torch.rand_like(img)
+            img = torch.where(noise < self.amount / 2, torch.zeros_like(img), img)
+            img = torch.where((noise >= self.amount / 2) & (noise < self.amount), torch.ones_like(img), img)
+        return img

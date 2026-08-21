@@ -19,28 +19,27 @@ class SegmentRankingModel(nn.Module):
 
         self.mlp = nn.Sequential(
             # nn.BatchNorm1d(input_dim),
-            nn.Linear(input_dim, 1024),
+            nn.Linear(input_dim, 344),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
 
-            nn.Linear(1024, 128),
-            nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Linear(344, 256),
+            nn.Dropout(0.3),
 
-            nn.Linear(128, 8),
-            nn.Dropout(0.5),
+            nn.Linear(256, 64),
+            nn.Dropout(0.2),
 
-            nn.Linear(8, 1),
+            nn.Linear(64, 1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
         
         if self.training:
-            noise = torch.rand_like(x) * 0.00025 - torch.rand_like(x) * 0.00025
+            noise = torch.rand_like(x) * 0.025 - torch.rand_like(x) * 0.025
             x = x + noise
 
-        x = torch.nn.functional.normalize(x, dim=0)
+        x = torch.nn.functional.normalize(x, dim=1)
         x = self.mlp(x)
         return x 
     
@@ -138,14 +137,15 @@ class VideoSegmenterLoss(nn.Module):
         self.normality_K = normality_K
 
     def forward(self, y_anomaly, y_normal):
-        max_anomaly, _ = torch.max(y_anomaly, dim=1)
-        max_normal, _ = torch.max(y_normal, dim=1)
+        # print(f"y_anomaly.shape: {y_anomaly.shape}, y_normal.shape: {y_normal.shape}"), exit()
+        max_anomaly, _ = torch.max(y_anomaly, dim=0)
+        max_normal, _ = torch.max(y_normal, dim=0)
         
         hinge_loss = F.relu(1.0 - max_anomaly + max_normal)
         
-        smoothness = torch.sum((y_anomaly[:, :-1, :] - y_anomaly[:, 1:, :]) ** 2, dim=1)
-        sparsity = torch.sum(y_anomaly, dim=1)
-        avg_normal_loss = torch.mean(y_normal, dim=1)
+        smoothness = torch.sum((y_anomaly[:-1, :] - y_anomaly[1:, :]) ** 2, dim=0)
+        sparsity = torch.sum(y_anomaly, dim=0)
+        avg_normal_loss = torch.mean(y_normal, dim=0)
 
         mean_hinge = torch.mean(hinge_loss)
         mean_smoothness = self.smoothness_K * torch.mean(smoothness)
@@ -154,32 +154,13 @@ class VideoSegmenterLoss(nn.Module):
         
         return mean_hinge, mean_smoothness, mean_sparsity, mean_avg_normal
 
-class MILVideoDataset(Dataset):
-    def __init__(self, anomaly_files, normal_files, seq_len=32):
-        self.anomaly_files = anomaly_files
-        self.normal_files = normal_files
-        self.seq_len = seq_len
-
-    def __len__(self):
-        return len(self.anomaly_files)
-
-    def _interpolate_features(self, tensor):
-        tensor = tensor.unsqueeze(0).permute(0, 2, 1)
-        tensor = F.interpolate(tensor, size=self.seq_len, mode='linear', align_corners=False)
-        tensor = tensor.squeeze(0).permute(1, 0)
-        
-        return tensor
-
-    def __getitem__(self, idx):
-        fa_path = self.anomaly_files[idx]
-        fa = torch.load(fa_path, weights_only=True).float()
-        fa = self._interpolate_features(fa)
-
-        fn_path = random.choice(self.normal_files)
-        fn = torch.load(fn_path, weights_only=True).float()
-        fn = self._interpolate_features(fn)
-
-        return fa, fn
+import os
+import copy
+import random
+import re
+from datetime import datetime
+from collections import defaultdict
+import torch
 
 def segment_score_model_trainer(model: SegmentRankingModel, 
                         anormal_feat_dir: str, 
@@ -190,6 +171,10 @@ def segment_score_model_trainer(model: SegmentRankingModel,
                         batch_size: int=16,
                         val_ratio: float=0.2,
                         early_stop_patience: int=8,
+                        weight_decay:float = 0.001,
+                        Normal_loss_k:float = 0.0001,
+                        Sparsity_loss_k:float = 0.0001,
+                        Smoothness_loss_k:float = 0.0001,
                         pt_save_dir="segmentation_model_checkpoint"):
 
     anormal_files = [os.path.join(anormal_feat_dir, f) for f in os.listdir(anormal_feat_dir) if f.endswith('.pt')]
@@ -198,9 +183,13 @@ def segment_score_model_trainer(model: SegmentRankingModel,
     random.shuffle(anormal_files)
     random.shuffle(normal_files)
 
-    def chunk_list(lst, k):
-        n = len(lst)
-        return [lst[i * n // k : (i + 1) * n // k] for i in range(k)]
+    def chunk_list(file_lst, k):
+        n = len(file_lst)
+        file_count_per_chunk = n // k
+        return [
+                   file_lst[i * file_count_per_chunk : (i + 1) * file_count_per_chunk] 
+                   for i in range(k)
+               ]
 
     anormal_k_chunks = chunk_list(anormal_files, k_fold)
 
@@ -230,8 +219,8 @@ def segment_score_model_trainer(model: SegmentRankingModel,
         else:
             normal_test_files = random.sample(normal_files, k=len(anormal_test_files))
 
-        criterion = VideoSegmenterLoss(smoothness_K=0.001, sparsity_K=0.001, normality_K=0.001)
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.0025)
+        criterion = VideoSegmenterLoss(Smoothness_loss_k, Sparsity_loss_k, Normal_loss_k)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
         num_batches = (len(anormal_train_files) + batch_size - 1) // batch_size
         
@@ -254,83 +243,54 @@ def segment_score_model_trainer(model: SegmentRankingModel,
             epoch_avg_normal = 0.0
             epoch_grad_norm = 0.0 
 
-            class_groups = defaultdict(list)
-            for f in anormal_train_files:
-                _class = re.match(r"^[a-zA-Z]+", os.path.basename(f)).group()
-                class_groups[_class].append(f)
-                
-            class_names = list(class_groups.keys())
-            class_pointers = {k: 0 for k in class_names}
-            
-            for k in class_names:
-                random.shuffle(class_groups[k])
-                
-            anormal_batches = []
-            class_idx = 0
-            
-            for i in range(num_batches):
-                current_b_size = batch_size if i < num_batches - 1 else len(anormal_train_files) - i * batch_size
-                if current_b_size == 0: current_b_size = batch_size
-                
-                batch = []
-                for _ in range(current_b_size):
-                    c = class_names[class_idx]
-                    
-                    if class_pointers[c] >= len(class_groups[c]):
-                        random.shuffle(class_groups[c])
-                        class_pointers[c] = 0
-                        
-                    batch.append(class_groups[c][class_pointers[c]])
-                    class_pointers[c] += 1
-                    
-                    class_idx = (class_idx + 1) % len(class_names)
-                    
-                anormal_batches.append(batch)
+            random.shuffle(anormal_train_files)
+            anormal_batches = [
+                anormal_train_files[i * batch_size : (i + 1) * batch_size] 
+                for i in range(num_batches)
+            ]
 
             for i in range(num_batches):
                 optimizer.zero_grad()
 
                 anormal_batch_files = anormal_batches[i]
                 current_b_size = len(anormal_batch_files)
+                
                 normal_batch_files = random.sample(normal_train_files, k=current_b_size)
 
-                feat_anomaly = []
-                for f in anormal_batch_files:
-                    fa = torch.load(f, weights_only=True).to("cuda").float()
-                    fa = fa.unsqueeze(0).permute(0, 2, 1)
-                    fa = F.interpolate(fa, size=32, mode='linear', align_corners=False)
-                    fa = fa.squeeze(0).permute(1, 0)
-                    feat_anomaly.append(fa)
+                batch_h, batch_sm, batch_sp, batch_an = 0.0, 0.0, 0.0, 0.0
+                
+                for fa_path, fn_path in zip(anormal_batch_files, normal_batch_files):
+                    fa = torch.load(fa_path, weights_only=True)["feats"].to("cuda").float()
+                    fn = torch.load(fn_path, weights_only=True)["feats"].to("cuda").float()
+
+                    y_anomaly = model(fa) 
+                    y_normal = model(fn)
                     
-                feat_normal = []
-                for f in normal_batch_files:
-                    fn = torch.load(f, weights_only=True).to("cuda").float()
-                    fn = fn.unsqueeze(0).permute(0, 2, 1)
-                    fn = F.interpolate(fn, size=32, mode='linear', align_corners=False)
-                    fn = fn.squeeze(0).permute(1, 0)
-                    feat_normal.append(fn)
-
-                fa_batch = torch.stack(feat_anomaly)
-                fn_batch = torch.stack(feat_normal)
-
-                y_anomaly = model(fa_batch) 
-                y_normal = model(fn_batch)
+                    h, sm, sp, an = criterion(y_anomaly, y_normal)
+                    
+                    batch_h += h
+                    batch_sm += sm
+                    batch_sp += sp
+                    batch_an += an
+                    
+                batch_h /= current_b_size
+                batch_sm /= current_b_size
+                batch_sp /= current_b_size
+                batch_an /= current_b_size
                 
-                h, sm, sp, an = criterion(y_anomaly, y_normal)
-                
-                train_loss = h + sm + sp + an
+                train_loss = batch_h + batch_sm + batch_sp + batch_an
                 train_loss.backward()
                 
-                batch_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.3)
+                batch_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=.75)
                 epoch_grad_norm += batch_grad_norm.item()
                 
                 optimizer.step()
                 scheduler.step()
 
-                epoch_mean_hinge_loss += h.item()
-                epoch_mean_smoothness_loss += sm.item()
-                epoch_mean_sparsity_loss += sp.item()
-                epoch_avg_normal += an.item()
+                epoch_mean_hinge_loss += batch_h.item()
+                epoch_mean_smoothness_loss += batch_sm.item()
+                epoch_mean_sparsity_loss += batch_sp.item()
+                epoch_avg_normal += batch_an.item()
 
                 train_losses.append(train_loss.item())
 
@@ -343,11 +303,11 @@ def segment_score_model_trainer(model: SegmentRankingModel,
             with torch.no_grad():
                 num_test_files = len(anormal_test_files)
                 for fa_path, fn_path in zip(anormal_test_files, normal_test_files):
-                    fa = torch.load(fa_path, weights_only=True).to("cuda").float()
-                    fn = torch.load(fn_path, weights_only=True).to("cuda").float()
+                    fa = torch.load(fa_path, weights_only=True)["feats"].to("cuda").float()
+                    fn = torch.load(fn_path, weights_only=True)["feats"].to("cuda").float()
                     
-                    y_anomaly = model(fa.unsqueeze(0))
-                    y_normal = model(fn.unsqueeze(0))
+                    y_anomaly = model(fa)
+                    y_normal = model(fn)
                     
                     h, sm, sp, an = criterion(y_anomaly, y_normal)
                     val_mean_hinge += h.item()
@@ -407,91 +367,3 @@ def segment_score_model_trainer(model: SegmentRankingModel,
 
     print("\nK-Fold Cross Validation Completed!")
     print(f"{k_fold} Fold Avg. Val Loss: {sum(fold_best_losses) / k_fold:.6f}")
-
-def compute_tiou(pred_segment, gt_segment):
-    intersection = max(0, min(pred_segment[1], gt_segment[1]) - max(pred_segment[0], gt_segment[0]))
-    union = (pred_segment[1] - pred_segment[0]) + (gt_segment[1] - gt_segment[0]) - intersection
-    
-    if union > 0:
-        return intersection / union
-    return 0.0
-
-def calculate_mAP(datas, tiou_threshold=0.5):
-    def _get_ap(subset_datas):
-        all_preds = []
-        total_gts = 0
-        gt_dict = {}
-
-        for data in subset_datas:
-            video_name = data['name']
-            gts = data['gt_time_stamps']
-            preds = data['pred_time_stamps']
-
-            total_gts += len(gts)
-            gt_dict[video_name] = [{'interval': gt, 'matched': False} for gt in gts]
-
-            for pred in preds:
-                all_preds.append({
-                    'video_name': video_name,
-                    'interval': [pred[0], pred[1]],
-                    'score': pred[2]
-                })
-
-        if total_gts == 0: 
-            return 0.0
-
-        all_preds = sorted(all_preds, key=lambda x: x['score'], reverse=True)
-
-        tp = np.zeros(len(all_preds))
-        fp = np.zeros(len(all_preds))
-
-        for idx, pred in enumerate(all_preds):
-            video_name = pred['video_name']
-            pred_interval = pred['interval']
-            
-            video_gts = gt_dict.get(video_name, [])
-            
-            best_tiou = 0.0
-            best_gt_idx = -1
-            
-            for gt_idx, gt in enumerate(video_gts):
-                tiou = compute_tiou(pred_interval, gt['interval'])
-                if tiou > best_tiou:
-                    best_tiou = tiou
-                    best_gt_idx = gt_idx
-
-            if best_tiou >= tiou_threshold and not video_gts[best_gt_idx]['matched']:
-                tp[idx] = 1
-                video_gts[best_gt_idx]['matched'] = True
-            else:
-                fp[idx] = 1
-
-        cum_tp = np.cumsum(tp)
-        cum_fp = np.cumsum(fp)
-
-        recalls = cum_tp / total_gts
-        precisions = cum_tp / (cum_tp + cum_fp)
-
-        mrec = np.concatenate(([0.], recalls, [1.]))
-        mpre = np.concatenate(([0.], precisions, [0.]))
-
-        for i in range(mpre.size - 1, 0, -1):
-            mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
-
-        indices = np.where(mrec[1:] != mrec[:-1])[0]
-        ap = np.sum((mrec[indices + 1] - mrec[indices]) * mpre[indices + 1])
-        return ap
-
-    # 1. Genel (Overall) mAP hesaplaması
-    overall_ap = _get_ap(datas)
-
-    # 2. Kategori bazlı AP hesaplaması
-    categories = sorted(list(set(data['category'] for data in datas if data['category'] != 'Normal')))
-    category_aps = {}
-    
-    for cat in categories:
-        # Sadece o kategoriye ait verileri filtrele
-        cat_datas = [d for d in datas if d['category'] == cat]
-        category_aps[cat] = _get_ap(cat_datas)
-        
-    return overall_ap, category_aps
