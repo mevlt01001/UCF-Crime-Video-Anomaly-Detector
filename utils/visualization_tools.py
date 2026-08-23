@@ -1,15 +1,17 @@
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-def plot_anomaly_timeline(scores, # [1000]
-                          scores_org, # [1000]
+def plot_anomaly_timeline(scores, 
+                          scores_org, 
                           segments,
                           video_seconds: float, 
                           threshold: float = 0.3, 
                           save_path: str = "anomaly_segmentation_plot.png"
                           ):
     
-    time_axis = np.linspace(0, video_seconds, 1000)
+    time_axis = np.linspace(0, video_seconds, len(scores))
     
     plt.figure(figsize=(15, 6), dpi=120)
     plt.plot(time_axis, scores_org, color="#b6b971", alpha=0.5, linewidth=1.5, label='Ham Anomali Skoru (Orijinal)')
@@ -22,9 +24,8 @@ def plot_anomaly_timeline(scores, # [1000]
         
         label = 'Anomali Segment' if idx == 0 else None
         plt.axvspan(start, end, color='red', alpha=0.2, label=label)
-        
-        plt.text(start, 1.02, f"{start}s", color='darkred', fontsize=9, ha='center')
-        plt.text(end, 1.02, f"{end}s", color='darkred', fontsize=9, ha='center')
+        plt.text(start, 1.02, f"{start}s ", color='darkred', fontsize=9, ha='right', rotation=45)
+        plt.text(end, 1.02, f" {end}s", color='darkred', fontsize=9, ha='left', rotation=45)
 
     plt.title("Video Anomali Skoru", fontsize=14, fontweight='bold')
     plt.xlabel("Zaman (Saniye)", fontsize=12)

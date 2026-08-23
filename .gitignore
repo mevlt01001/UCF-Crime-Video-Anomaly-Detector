@@ -7,3 +7,30 @@
 extracted_anomaly_features
 extracted_normal_features
 *test*
+
+
+Langchain ve langghraph kullanılarak oluşturulan proje düşün.
+
+Bu proje içinde 5 tool var. Her tool sırası ile:
+
+1- VLM modeli çalıştırırır.
+2- LLM modeli çalıştırır.
+3- Video Segmenter modeli çalıştırır. (s3d)
+4- Nesne Tespit modeli çalıştırır.
+5- Kameralar arası nesne takip modeli çalıştırr. (ReID)
+
+Bu toollar da kendi içinde farklı toollar kullanabilir. Burda asıl öenmli olan şey agentic workflow, yani kullanıcınnın isteğine göre bu toollar birbirlerine nasıl ve ne srada bağlanacağı ve ne şekilde çalışacağı belirlenir. 
+
+Örneğin kullanıcı "Son bir saat içinde garaja giriş çıkış yapıldı mı?" sorusu sorulduğunda ne yapması gerektiğine aşağıdaki gibi karar verir. 
+
+sistem: "Kullanıcı garaj için son bir saatte giriş çıkış yapılıp yapılmadığını sorguluyor"
+sistem: "Hangi kamera garajı görüyor?"
+sistem: Kameraların tam olarak nereleri görüntüledği detaylandırılıan cameras.cnf dosyasına bakması gerekitğine karar verir. (Dosya içeriğini bir liste olarak düşünebilirsin basitçe kaç kamera var ise o kadar liste var ve bu lislere içinde kameraların görüntüleği yerler ortak görüntüleme alanları olan diğer kameraların idleri kendi kamera ıd si falan yazıyo. bir dict de olabilir. sorun değil önemli olan bu karara varması)
+sistem: "Garajı gören kamera ID'si 3" veya "İki farklı kamera 2 farklı garajı görüntülüyor senin bahsettiğin hangisi?" (ardından kullanıcıdan input bekler ve işlem devam eder.)
+sistem: "Kullanıcı son bir saatteki video ile ilgili işlem görmek istiyor bu kamera dan bu sebeble bu kamaraki 1 saatlik veri ile birlikte hangi toolu kullanabilirim?"
+sistem: Tools'u inceledeğimde görüntü girdisi kabul eden 2 ayrı tool bulunmakta ve bunlar anomli segemntaer ile VLM modeli. Kullanıcı isteği dorğrultusunda herngi bir anomali tespit isteği saptamadım. Bu sebeble "VLM e bu video yu vermem gerekiyor ancak bunun için VLM i çalıştıran toolu çalıştracağım. VLM video inputu bu video oalcak. Text inputu ise kullanıcının isteği doğrultusunda oluşturulan :'Bu video bir garajı görüntülüyor videonun herhangi bir yerinde garaja giri ş veya çıkış yapılmış mı?'" 
+
+VLM_Tool: "Evet bahsettiğiniz şekilde garajın kapıları açılıyor ve takrar kapanıyor. Videonun xx saniyesi (VLM modeli video saniyesini sallar)"
+
+sistem: "VLM toolu garajın kapısının açıldığını ve saniyesi hakkında bilgi ver ancak VLM toolunun veriği zaman aralıkları tamamen güvensiz olduğunu bildiğim için "
+VLM çıktısı: ""

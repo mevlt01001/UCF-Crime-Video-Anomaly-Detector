@@ -14,7 +14,7 @@ from .video_preprocess import (
 )
 
 from .VideoFeatureExtractor import (
-    Video_Feature_Extractor, 
+    Video_Analyzer, 
     extract_feats
 )
 
