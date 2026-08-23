@@ -1,0 +1,1391 @@
+{
+  "cameras": [
+    {
+      "id": "cam_01",
+      "name": "Ana giriş",
+      "aliases": [
+        "ön kapı",
+        "ana kapı",
+        "turnike",
+        "resepsiyon kapısı"
+      ],
+      "location": "A blok zemin kat",
+      "view": "Ana kapı, turnikeler ve güvenlik masası",
+      "description": "Bina ana girişini, turnikeleri ve güvenlik masasını görür. Yaya giriş-çıkışını takip eder.",
+      "overlaps_with": [
+        "cam_02"
+      ],
+      "video_path": "recordings/cam_01/"
+    },
+    {
+      "id": "cam_02",
+      "name": "Lobi",
+      "aliases": [
+        "hol",
+        "karşılama",
+        "resepsiyon"
+      ],
+      "location": "A blok zemin kat",
+      "view": "Lobi oturma alanı ve asansör holü",
+      "description": "A blok lobisini, bekleyen kişileri ve asansör kapılarını görür.",
+      "overlaps_with": [
+        "cam_01"
+      ],
+      "video_path": "recordings/cam_02/"
+    },
+    {
+      "id": "cam_03",
+      "name": "Garaj girişi",
+      "aliases": [
+        "garaj",
+        "otopark kapısı",
+        "otopark girişi",
+        "parking"
+      ],
+      "location": "B blok zemin kat",
+      "view": "Giriş bariyeri ve iki araç şeridi",
+      "description": "Araçların garaja girişini görür. Bariyer, plaka hizası ve yaya kapısı soldadır.",
+      "overlaps_with": [
+        "cam_04",
+        "cam_07"
+      ],
+      "video_path": "recordings/cam_03/"
+    },
+    {
+      "id": "cam_04",
+      "name": "Garaj içi",
+      "aliases": [
+        "garaj",
+        "otopark",
+        "park yeri",
+        "parking"
+      ],
+      "location": "B blok zemin kat",
+      "view": "Kapalı otopark koridoru ve park yuvaları",
+      "description": "Garajın içini, park eden araçları ve yaya yürüyüş yolunu görür. Giriş bariyeri görünmez.",
+      "overlaps_with": [
+        "cam_03",
+        "cam_07"
+      ],
+      "video_path": "recordings/cam_04/"
+    },
+    {
+      "id": "cam_05",
+      "name": "Bahçe",
+      "aliases": [
+        "dış alan",
+        "peyzaj",
+        "avlu"
+      ],
+      "location": "Bahçe",
+      "view": "Bahçe yolu ve banklar",
+      "description": "Açık bahçeyi, yürüyüş yolunu ve bina dışı oturma alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_05/"
+    },
+    {
+      "id": "cam_06",
+      "name": "B blok koridor",
+      "aliases": [
+        "koridor",
+        "1. kat koridor"
+      ],
+      "location": "B blok 1. kat",
+      "view": "Kat koridoru ve ofis kapıları",
+      "description": "B blok birinci kat koridorunu ve ofis girişlerini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_06/"
+    },
+    {
+      "id": "cam_07",
+      "name": "Otopark çıkışı",
+      "aliases": [
+        "garaj çıkışı",
+        "otopark çıkışı",
+        "çıkış bariyeri"
+      ],
+      "location": "B blok zemin kat",
+      "view": "Çıkış bariyeri ve rampa",
+      "description": "Araçların garajdan çıkışını görür. Giriş şeridi bu açıda yoktur.",
+      "overlaps_with": [
+        "cam_03",
+        "cam_04"
+      ],
+      "video_path": "recordings/cam_07/"
+    },
+    {
+      "id": "cam_08",
+      "name": "Arşiv",
+      "aliases": [
+        "evrak",
+        "dosya odası",
+        "arşiv odası"
+      ],
+      "location": "A blok bodrum",
+      "view": "Arşiv kapısı ve raf sırası",
+      "description": "Arşiv odası kapısını ve evrak raflarının girişini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_08/"
+    },
+    {
+      "id": "cam_09",
+      "name": "Kantin",
+      "aliases": [
+        "yemekhane",
+        "kafeterya",
+        "çay ocağı"
+      ],
+      "location": "A blok 1. kat",
+      "view": "Kasa, oturma masaları ve servis tezgahı",
+      "description": "Kantini, kasa sırasını ve yemek alanını görür.",
+      "overlaps_with": [
+        "cam_10"
+      ],
+      "video_path": "recordings/cam_09/"
+    },
+    {
+      "id": "cam_10",
+      "name": "Kantin mutfağı",
+      "aliases": [
+        "mutfak",
+        "hazırlık"
+      ],
+      "location": "A blok 1. kat",
+      "view": "Hazırlık tezgahı ve arka kapı",
+      "description": "Kantin mutfağını ve personel girişini görür. Oturma salonu görünmez.",
+      "overlaps_with": [
+        "cam_09"
+      ],
+      "video_path": "recordings/cam_10/"
+    },
+    {
+      "id": "cam_11",
+      "name": "Asansör holü A",
+      "aliases": [
+        "asansör",
+        "asansör önü"
+      ],
+      "location": "A blok 2. kat",
+      "view": "Asansör kapıları ve kat göstergesi",
+      "description": "A blok ikinci kat asansör holünü görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_11/"
+    },
+    {
+      "id": "cam_12",
+      "name": "Merdiven A",
+      "aliases": [
+        "yangın merdiveni",
+        "merdiven boşluğu"
+      ],
+      "location": "A blok 2. kat",
+      "view": "Merdiven sahanlığı",
+      "description": "A blok yangın merdivenini ve kat kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_12/"
+    },
+    {
+      "id": "cam_13",
+      "name": "Toplantı odası",
+      "aliases": [
+        "konferans",
+        "toplantı"
+      ],
+      "location": "A blok 2. kat",
+      "view": "Masa ve projeksiyon duvarı",
+      "description": "Büyük toplantı odasının kapısını ve iç masayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_13/"
+    },
+    {
+      "id": "cam_14",
+      "name": "Sunucu odası",
+      "aliases": [
+        "server",
+        "sistem odası",
+        "data center"
+      ],
+      "location": "A blok bodrum",
+      "view": "Rack kabinleri ve soğutma ünitesi",
+      "description": "Sunucu odası kapısını ve kabin sırasını görür.",
+      "overlaps_with": [
+        "cam_08"
+      ],
+      "video_path": "recordings/cam_14/"
+    },
+    {
+      "id": "cam_15",
+      "name": "C blok giriş",
+      "aliases": [
+        "c kapı",
+        "yan giriş"
+      ],
+      "location": "C blok zemin kat",
+      "view": "Yan kapı ve kart okuyucu",
+      "description": "C blok yan girişini ve kartlı geçişi görür.",
+      "overlaps_with": [
+        "cam_16"
+      ],
+      "video_path": "recordings/cam_15/"
+    },
+    {
+      "id": "cam_16",
+      "name": "C blok koridor",
+      "aliases": [
+        "c koridor"
+      ],
+      "location": "C blok zemin kat",
+      "view": "Uzun koridor ve depo kapıları",
+      "description": "C blok zemin koridorunu ve depo girişlerini görür.",
+      "overlaps_with": [
+        "cam_15"
+      ],
+      "video_path": "recordings/cam_16/"
+    },
+    {
+      "id": "cam_17",
+      "name": "Depo",
+      "aliases": [
+        "ambar",
+        "malzeme odası"
+      ],
+      "location": "C blok bodrum",
+      "view": "Raf sırası ve forklift alanı",
+      "description": "Malzeme deposunu, rafları ve forklift geçişini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_17/"
+    },
+    {
+      "id": "cam_18",
+      "name": "Yükleme rampası",
+      "aliases": [
+        "rampa",
+        "sevkiyat",
+        "kamyon"
+      ],
+      "location": "C blok zemin kat",
+      "view": "Rampa ve kamyon parkı",
+      "description": "Kamyon yükleme rampasını ve sevkiyat kapısını görür.",
+      "overlaps_with": [
+        "cam_17"
+      ],
+      "video_path": "recordings/cam_18/"
+    },
+    {
+      "id": "cam_19",
+      "name": "D blok lobi",
+      "aliases": [
+        "d karşılama"
+      ],
+      "location": "D blok zemin kat",
+      "view": "Bekleme koltukları",
+      "description": "D blok zemin lobisini ve ziyaretçi bekleme alanını görür.",
+      "overlaps_with": [
+        "cam_20"
+      ],
+      "video_path": "recordings/cam_19/"
+    },
+    {
+      "id": "cam_20",
+      "name": "D blok asansör",
+      "aliases": [
+        "d asansör"
+      ],
+      "location": "D blok zemin kat",
+      "view": "Asansör kapısı",
+      "description": "D blok zemin asansör holünü görür.",
+      "overlaps_with": [
+        "cam_19"
+      ],
+      "video_path": "recordings/cam_20/"
+    },
+    {
+      "id": "cam_21",
+      "name": "Personel giriş",
+      "aliases": [
+        "personel kapısı",
+        "arkakapı",
+        "staff"
+      ],
+      "location": "D blok zemin kat",
+      "view": "Personel turnikesi",
+      "description": "Personel girişini ve kart basma noktasını görür. Ziyaretçi kapısı değildir.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_21/"
+    },
+    {
+      "id": "cam_22",
+      "name": "Otopark 2 girişi",
+      "aliases": [
+        "açık otopark",
+        "dış otopark"
+      ],
+      "location": "D blok bahçe",
+      "view": "Açık otopark giriş bariyeri",
+      "description": "Açık otoparka araç girişini görür. Kapalı B blok garajı değildir.",
+      "overlaps_with": [
+        "cam_23"
+      ],
+      "video_path": "recordings/cam_22/"
+    },
+    {
+      "id": "cam_23",
+      "name": "Otopark 2 saha",
+      "aliases": [
+        "açık park",
+        "dış park yeri"
+      ],
+      "location": "D blok bahçe",
+      "view": "Park çizgileri ve aydınlatma",
+      "description": "Açık otopark sahasını ve park eden araçları görür.",
+      "overlaps_with": [
+        "cam_22"
+      ],
+      "video_path": "recordings/cam_23/"
+    },
+    {
+      "id": "cam_24",
+      "name": "Güvenlik odası",
+      "aliases": [
+        "kontrol odası",
+        "monitor"
+      ],
+      "location": "A blok zemin kat",
+      "view": "Masalar ve duvar monitörleri",
+      "description": "Güvenlik odasının kapısını ve iç masayı görür.",
+      "overlaps_with": [
+        "cam_01"
+      ],
+      "video_path": "recordings/cam_24/"
+    },
+    {
+      "id": "cam_25",
+      "name": "Çatı",
+      "aliases": [
+        "teras",
+        "çatı katı"
+      ],
+      "location": "B blok çatı",
+      "view": "Teras ve klima üniteleri",
+      "description": "B blok çatı terasını ve mekanik üniteleri görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_25/"
+    },
+    {
+      "id": "cam_26",
+      "name": "Spor salonu",
+      "aliases": [
+        "fitness",
+        "gym"
+      ],
+      "location": "D blok 1. kat",
+      "view": "Aletler ve soyunma kapısı",
+      "description": "Spor salonunu ve soyunma odası kapısını görür.",
+      "overlaps_with": [
+        "cam_27"
+      ],
+      "video_path": "recordings/cam_26/"
+    },
+    {
+      "id": "cam_27",
+      "name": "Soyunma odası koridoru",
+      "aliases": [
+        "soyunma",
+        "vestiyer"
+      ],
+      "location": "D blok 1. kat",
+      "view": "Koridor ve dolap sırası",
+      "description": "Soyunma odası koridorunu görür. Salon içi görünmez.",
+      "overlaps_with": [
+        "cam_26"
+      ],
+      "video_path": "recordings/cam_27/"
+    },
+    {
+      "id": "cam_28",
+      "name": "Laboratuvar",
+      "aliases": [
+        "lab",
+        "deney odası"
+      ],
+      "location": "C blok 2. kat",
+      "view": "Tezgah ve çeker ocak",
+      "description": "Laboratuvar kapısını ve deney tezgahlarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_28/"
+    },
+    {
+      "id": "cam_29",
+      "name": "Kütüphane",
+      "aliases": [
+        "okuma salonu",
+        "kitaplık"
+      ],
+      "location": "C blok 1. kat",
+      "view": "Raf ve masa sırası",
+      "description": "Kütüphane okuma salonunu ve giriş turnikesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_29/"
+    },
+    {
+      "id": "cam_30",
+      "name": "Acil çıkış C",
+      "aliases": [
+        "acil kapı",
+        "yangın çıkışı"
+      ],
+      "location": "C blok zemin kat",
+      "view": "Acil çıkış kapısı ve dış sahanlık",
+      "description": "C blok acil çıkış kapısını ve dış sahanlığı görür.",
+      "overlaps_with": [
+        "cam_16"
+      ],
+      "video_path": "recordings/cam_30/"
+    },
+    {
+      "id": "cam_31",
+      "name": "Koridor 31",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 31"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Koridor 31 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_31/"
+    },
+    {
+      "id": "cam_32",
+      "name": "Asansör 32",
+      "aliases": [
+        "asansör",
+        "kamera 32"
+      ],
+      "location": "E blok zemin kat",
+      "view": "Asansör 32 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_32/"
+    },
+    {
+      "id": "cam_33",
+      "name": "Merdiven 33",
+      "aliases": [
+        "merdiven",
+        "kamera 33"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Merdiven 33 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_33/"
+    },
+    {
+      "id": "cam_34",
+      "name": "Ofis alanı 34",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 34"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Ofis alanı 34 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_34/"
+    },
+    {
+      "id": "cam_35",
+      "name": "Toplantı 35",
+      "aliases": [
+        "toplantı",
+        "kamera 35"
+      ],
+      "location": "F blok 3. kat",
+      "view": "Toplantı 35 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_35/"
+    },
+    {
+      "id": "cam_36",
+      "name": "Kat mutfağı 36",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 36"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Kat mutfağı 36 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_36/"
+    },
+    {
+      "id": "cam_37",
+      "name": "Giriş 37",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 37"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 37 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_37/"
+    },
+    {
+      "id": "cam_38",
+      "name": "Bahçe yolu 38",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 38"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 38 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_38/"
+    },
+    {
+      "id": "cam_39",
+      "name": "Kat park 39",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 39"
+      ],
+      "location": "Otopark kat 39",
+      "view": "Kat park 39 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_39/"
+    },
+    {
+      "id": "cam_40",
+      "name": "Laboratuvar 40",
+      "aliases": [
+        "lab",
+        "kamera 40"
+      ],
+      "location": "H blok zemin kat",
+      "view": "Laboratuvar 40 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_40/"
+    },
+    {
+      "id": "cam_41",
+      "name": "Koridor 41",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 41"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Koridor 41 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_41/"
+    },
+    {
+      "id": "cam_42",
+      "name": "Asansör 42",
+      "aliases": [
+        "asansör",
+        "kamera 42"
+      ],
+      "location": "E blok 2. kat",
+      "view": "Asansör 42 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_42/"
+    },
+    {
+      "id": "cam_43",
+      "name": "Merdiven 43",
+      "aliases": [
+        "merdiven",
+        "kamera 43"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Merdiven 43 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_43/"
+    },
+    {
+      "id": "cam_44",
+      "name": "Ofis alanı 44",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 44"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Ofis alanı 44 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_44/"
+    },
+    {
+      "id": "cam_45",
+      "name": "Toplantı 45",
+      "aliases": [
+        "toplantı",
+        "kamera 45"
+      ],
+      "location": "F blok 1. kat",
+      "view": "Toplantı 45 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_45/"
+    },
+    {
+      "id": "cam_46",
+      "name": "Kat mutfağı 46",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 46"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Kat mutfağı 46 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_46/"
+    },
+    {
+      "id": "cam_47",
+      "name": "Giriş 47",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 47"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 47 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_47/"
+    },
+    {
+      "id": "cam_48",
+      "name": "Bahçe yolu 48",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 48"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 48 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_48/"
+    },
+    {
+      "id": "cam_49",
+      "name": "Kat park 49",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 49"
+      ],
+      "location": "Otopark kat 49",
+      "view": "Kat park 49 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_49/"
+    },
+    {
+      "id": "cam_50",
+      "name": "Laboratuvar 50",
+      "aliases": [
+        "lab",
+        "kamera 50"
+      ],
+      "location": "H blok 2. kat",
+      "view": "Laboratuvar 50 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_50/"
+    },
+    {
+      "id": "cam_51",
+      "name": "Koridor 51",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 51"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Koridor 51 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_51/"
+    },
+    {
+      "id": "cam_52",
+      "name": "Asansör 52",
+      "aliases": [
+        "asansör",
+        "kamera 52"
+      ],
+      "location": "E blok zemin kat",
+      "view": "Asansör 52 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_52/"
+    },
+    {
+      "id": "cam_53",
+      "name": "Merdiven 53",
+      "aliases": [
+        "merdiven",
+        "kamera 53"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Merdiven 53 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_53/"
+    },
+    {
+      "id": "cam_54",
+      "name": "Ofis alanı 54",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 54"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Ofis alanı 54 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_54/"
+    },
+    {
+      "id": "cam_55",
+      "name": "Toplantı 55",
+      "aliases": [
+        "toplantı",
+        "kamera 55"
+      ],
+      "location": "F blok 3. kat",
+      "view": "Toplantı 55 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_55/"
+    },
+    {
+      "id": "cam_56",
+      "name": "Kat mutfağı 56",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 56"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Kat mutfağı 56 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_56/"
+    },
+    {
+      "id": "cam_57",
+      "name": "Giriş 57",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 57"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 57 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_57/"
+    },
+    {
+      "id": "cam_58",
+      "name": "Bahçe yolu 58",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 58"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 58 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_58/"
+    },
+    {
+      "id": "cam_59",
+      "name": "Kat park 59",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 59"
+      ],
+      "location": "Otopark kat 59",
+      "view": "Kat park 59 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_59/"
+    },
+    {
+      "id": "cam_60",
+      "name": "Laboratuvar 60",
+      "aliases": [
+        "lab",
+        "kamera 60"
+      ],
+      "location": "H blok zemin kat",
+      "view": "Laboratuvar 60 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_60/"
+    },
+    {
+      "id": "cam_61",
+      "name": "Koridor 61",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 61"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Koridor 61 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_61/"
+    },
+    {
+      "id": "cam_62",
+      "name": "Asansör 62",
+      "aliases": [
+        "asansör",
+        "kamera 62"
+      ],
+      "location": "E blok 2. kat",
+      "view": "Asansör 62 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_62/"
+    },
+    {
+      "id": "cam_63",
+      "name": "Merdiven 63",
+      "aliases": [
+        "merdiven",
+        "kamera 63"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Merdiven 63 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_63/"
+    },
+    {
+      "id": "cam_64",
+      "name": "Ofis alanı 64",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 64"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Ofis alanı 64 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_64/"
+    },
+    {
+      "id": "cam_65",
+      "name": "Toplantı 65",
+      "aliases": [
+        "toplantı",
+        "kamera 65"
+      ],
+      "location": "F blok 1. kat",
+      "view": "Toplantı 65 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_65/"
+    },
+    {
+      "id": "cam_66",
+      "name": "Kat mutfağı 66",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 66"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Kat mutfağı 66 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_66/"
+    },
+    {
+      "id": "cam_67",
+      "name": "Giriş 67",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 67"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 67 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_67/"
+    },
+    {
+      "id": "cam_68",
+      "name": "Bahçe yolu 68",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 68"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 68 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_68/"
+    },
+    {
+      "id": "cam_69",
+      "name": "Kat park 69",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 69"
+      ],
+      "location": "Otopark kat 69",
+      "view": "Kat park 69 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_69/"
+    },
+    {
+      "id": "cam_70",
+      "name": "Laboratuvar 70",
+      "aliases": [
+        "lab",
+        "kamera 70"
+      ],
+      "location": "H blok 2. kat",
+      "view": "Laboratuvar 70 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_70/"
+    },
+    {
+      "id": "cam_71",
+      "name": "Koridor 71",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 71"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Koridor 71 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_71/"
+    },
+    {
+      "id": "cam_72",
+      "name": "Asansör 72",
+      "aliases": [
+        "asansör",
+        "kamera 72"
+      ],
+      "location": "E blok zemin kat",
+      "view": "Asansör 72 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_72/"
+    },
+    {
+      "id": "cam_73",
+      "name": "Merdiven 73",
+      "aliases": [
+        "merdiven",
+        "kamera 73"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Merdiven 73 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_73/"
+    },
+    {
+      "id": "cam_74",
+      "name": "Ofis alanı 74",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 74"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Ofis alanı 74 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_74/"
+    },
+    {
+      "id": "cam_75",
+      "name": "Toplantı 75",
+      "aliases": [
+        "toplantı",
+        "kamera 75"
+      ],
+      "location": "F blok 3. kat",
+      "view": "Toplantı 75 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_75/"
+    },
+    {
+      "id": "cam_76",
+      "name": "Kat mutfağı 76",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 76"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Kat mutfağı 76 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_76/"
+    },
+    {
+      "id": "cam_77",
+      "name": "Giriş 77",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 77"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 77 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_77/"
+    },
+    {
+      "id": "cam_78",
+      "name": "Bahçe yolu 78",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 78"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 78 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_78/"
+    },
+    {
+      "id": "cam_79",
+      "name": "Kat park 79",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 79"
+      ],
+      "location": "Otopark kat 79",
+      "view": "Kat park 79 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_79/"
+    },
+    {
+      "id": "cam_80",
+      "name": "Laboratuvar 80",
+      "aliases": [
+        "lab",
+        "kamera 80"
+      ],
+      "location": "H blok zemin kat",
+      "view": "Laboratuvar 80 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_80/"
+    },
+    {
+      "id": "cam_81",
+      "name": "Koridor 81",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 81"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Koridor 81 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_81/"
+    },
+    {
+      "id": "cam_82",
+      "name": "Asansör 82",
+      "aliases": [
+        "asansör",
+        "kamera 82"
+      ],
+      "location": "E blok 2. kat",
+      "view": "Asansör 82 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_82/"
+    },
+    {
+      "id": "cam_83",
+      "name": "Merdiven 83",
+      "aliases": [
+        "merdiven",
+        "kamera 83"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Merdiven 83 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_83/"
+    },
+    {
+      "id": "cam_84",
+      "name": "Ofis alanı 84",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 84"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Ofis alanı 84 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_84/"
+    },
+    {
+      "id": "cam_85",
+      "name": "Toplantı 85",
+      "aliases": [
+        "toplantı",
+        "kamera 85"
+      ],
+      "location": "F blok 1. kat",
+      "view": "Toplantı 85 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_85/"
+    },
+    {
+      "id": "cam_86",
+      "name": "Kat mutfağı 86",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 86"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Kat mutfağı 86 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_86/"
+    },
+    {
+      "id": "cam_87",
+      "name": "Giriş 87",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 87"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 87 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_87/"
+    },
+    {
+      "id": "cam_88",
+      "name": "Bahçe yolu 88",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 88"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 88 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_88/"
+    },
+    {
+      "id": "cam_89",
+      "name": "Kat park 89",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 89"
+      ],
+      "location": "Otopark kat 89",
+      "view": "Kat park 89 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_89/"
+    },
+    {
+      "id": "cam_90",
+      "name": "Laboratuvar 90",
+      "aliases": [
+        "lab",
+        "kamera 90"
+      ],
+      "location": "H blok 2. kat",
+      "view": "Laboratuvar 90 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_90/"
+    },
+    {
+      "id": "cam_91",
+      "name": "Koridor 91",
+      "aliases": [
+        "koridor",
+        "hol",
+        "kamera 91"
+      ],
+      "location": "E blok 3. kat",
+      "view": "Koridor 91 genel bakış",
+      "description": "Kat koridorunu ve ofis kapılarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_91/"
+    },
+    {
+      "id": "cam_92",
+      "name": "Asansör 92",
+      "aliases": [
+        "asansör",
+        "kamera 92"
+      ],
+      "location": "E blok zemin kat",
+      "view": "Asansör 92 genel bakış",
+      "description": "Asansör holünü ve kat göstergesini görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_92/"
+    },
+    {
+      "id": "cam_93",
+      "name": "Merdiven 93",
+      "aliases": [
+        "merdiven",
+        "kamera 93"
+      ],
+      "location": "E blok 1. kat",
+      "view": "Merdiven 93 genel bakış",
+      "description": "Yangın merdiveni sahanlığını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_93/"
+    },
+    {
+      "id": "cam_94",
+      "name": "Ofis alanı 94",
+      "aliases": [
+        "ofis",
+        "çalışma alanı",
+        "kamera 94"
+      ],
+      "location": "F blok 2. kat",
+      "view": "Ofis alanı 94 genel bakış",
+      "description": "Açık ofis masalarını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_94/"
+    },
+    {
+      "id": "cam_95",
+      "name": "Toplantı 95",
+      "aliases": [
+        "toplantı",
+        "kamera 95"
+      ],
+      "location": "F blok 3. kat",
+      "view": "Toplantı 95 genel bakış",
+      "description": "Küçük toplantı odasının kapısını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_95/"
+    },
+    {
+      "id": "cam_96",
+      "name": "Kat mutfağı 96",
+      "aliases": [
+        "çay ocağı",
+        "pantry",
+        "kamera 96"
+      ],
+      "location": "F blok zemin kat",
+      "view": "Kat mutfağı 96 genel bakış",
+      "description": "Kat mutfağını ve eviye alanını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_96/"
+    },
+    {
+      "id": "cam_97",
+      "name": "Giriş 97",
+      "aliases": [
+        "kapı",
+        "giriş",
+        "kamera 97"
+      ],
+      "location": "G blok zemin kat",
+      "view": "Giriş 97 genel bakış",
+      "description": "Blok girişini ve kart okuyucuyu görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_97/"
+    },
+    {
+      "id": "cam_98",
+      "name": "Bahçe yolu 98",
+      "aliases": [
+        "yürüyüş yolu",
+        "kamera 98"
+      ],
+      "location": "G blok bahçe",
+      "view": "Bahçe yolu 98 genel bakış",
+      "description": "Dış yürüyüş yolunu ve aydınlatmayı görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_98/"
+    },
+    {
+      "id": "cam_99",
+      "name": "Kat park 99",
+      "aliases": [
+        "park",
+        "otopark katı",
+        "kamera 99"
+      ],
+      "location": "Otopark kat 99",
+      "view": "Kat park 99 genel bakış",
+      "description": "Katlı otopark şeridini ve kolonları görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_99/"
+    },
+    {
+      "id": "cam_100",
+      "name": "Laboratuvar 100",
+      "aliases": [
+        "lab",
+        "kamera 100"
+      ],
+      "location": "H blok zemin kat",
+      "view": "Laboratuvar 100 genel bakış",
+      "description": "Laboratuvar tezgahını ve malzeme dolabını görür.",
+      "overlaps_with": [],
+      "video_path": "recordings/cam_100/"
+    }
+  ]
+}

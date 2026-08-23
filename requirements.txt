@@ -1,0 +1,4 @@
+langchain-core
+# Gerçek picker testi için:
+# llama-cpp-python
+# langgraph
