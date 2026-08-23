@@ -20,10 +20,10 @@ class SegmentRankingModel(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, 344),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.6),
 
             nn.Linear(344, 256),
-            nn.Dropout(0.4),
+            nn.Dropout(0.6),
 
             nn.Linear(256, 1),
             nn.Sigmoid()

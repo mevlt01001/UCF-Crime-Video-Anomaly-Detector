@@ -13,7 +13,7 @@ from .video_preprocess import (
     AddSaltAndPepperNoise
 )
 
-from .VideoFeatureExtractor import (
+from .video_analyzer_model import (
     Video_Analyzer, 
     extract_feats
 )
@@ -26,5 +26,3 @@ from .VLM_tools import (
     Model_Manager, 
     generate_frames
 )
-
-from .VideoAnalyzerModel import VideoAnalyzerModelTest
