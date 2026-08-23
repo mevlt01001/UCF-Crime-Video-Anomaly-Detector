@@ -505,7 +505,7 @@ def extract_feats(analyzer: Video_Analyzer,
     skip_log_path = os.path.join(save_dir, "skipped_videos.txt")
  
     num_gpus = torch.cuda.device_count()
-    is_dp = num_gpus > 1
+    is_dp = num_gpus > 1 and 0 # dp removed
     
     if is_dp: 
         extractor = torch.nn.DataParallel(extractor)
