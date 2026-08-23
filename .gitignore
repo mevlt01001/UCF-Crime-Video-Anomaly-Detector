@@ -7,7 +7,7 @@
 extracted_anomaly_features
 extracted_normal_features
 *test*
-!TEST_CAMERA_SELECT.md
+!TEST_*.md
 
 
 Langchain ve langghraph kullanılarak oluşturulan proje düşün.
