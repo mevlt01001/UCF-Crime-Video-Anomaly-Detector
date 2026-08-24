@@ -77,13 +77,13 @@ class Video_Analyzer(torch.nn.Module):
     @staticmethod
     @torch.no_grad()
     def clip_generator(video_path: os.PathLike,
-                       clip_size: int, # Number of frames per clip
+                       clip_size: int,
                        stride: int,
                        fps: int = 30,
                        width: int = 224,
                        height: int = 224) -> tuple[Generator[torch.Tensor, None, None], int]:
 
-        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=0)
+        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=2)
         frame_indices = torch.arange(0, len(vr), step=vr.get_avg_fps() / fps).long()
         total_frames = len(frame_indices)
 
@@ -93,14 +93,18 @@ class Video_Analyzer(torch.nn.Module):
         number_of_clips = 1 + (total_frames - clip_size) // stride
 
         def _generator(video_reader):
-            for end_idx in range(clip_size, total_frames, stride):
-                start_idx = end_idx - clip_size
+            try:
+                for end_idx in range(clip_size, total_frames, stride):
+                    start_idx = end_idx - clip_size
 
-                clip_indices = frame_indices[start_idx:end_idx]
-                frames = video_reader.get_batch(clip_indices.tolist()).asnumpy()
+                    clip_indices = frame_indices[start_idx:end_idx]
+                    frames = video_reader.get_batch(clip_indices.tolist()).asnumpy()
 
-                clip = torch.from_numpy(frames) # [T, H, W, C]
-                yield clip
+                    clip = torch.from_numpy(frames) # [T, H, W, C]
+                    yield clip
+            finally:
+                del video_reader
+                gc.collect()
 
         return _generator(vr), number_of_clips
 
@@ -573,7 +577,10 @@ def extract_feats(analyzer: Video_Analyzer,
                     video_features.append(feats.detach().cpu())
                     
                     print_info(video_idx, vp, clip_idx + 1, total_clips)
-                    mini_batch = []
+                    
+                    del batch_tensor
+                    mini_batch.clear()
+                    torch.cuda.empty_cache()
 
             if len(mini_batch) > 0:
                 batch_tensor = torch.stack(mini_batch).to("cuda")
