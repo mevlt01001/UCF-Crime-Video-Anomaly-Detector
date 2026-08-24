@@ -3,7 +3,7 @@ from .fc_model import (
     segment_score_model_trainer
 )
 
-from .video_preprocess import (
+from .video_process import (
     fetch_video_patches, 
     get_video_length, 
     save_segment_clips, 
