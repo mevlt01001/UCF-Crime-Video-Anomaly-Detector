@@ -83,7 +83,7 @@ class Video_Analyzer(torch.nn.Module):
                        width: int = 224,
                        height: int = 224) -> tuple[Generator[torch.Tensor, None, None], int]:
 
-        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=4)
+        vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=0)
         frame_indices = torch.arange(0, len(vr), step=vr.get_avg_fps() / fps).long()
         total_frames = len(frame_indices)
 
