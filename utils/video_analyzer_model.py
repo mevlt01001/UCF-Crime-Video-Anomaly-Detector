@@ -16,9 +16,9 @@ from torchvision.transforms import v2
 from typing import Generator, Optional
 from torchvision.models.video import *
 from torch.utils.data import Dataset, DataLoader
-from .SegmentRankingModel import SegmentRankingModel
+from .fc_model import SegmentRankingModel
 from .visualization_tools import plot_anomaly_timeline
-from .video_preprocess import get_video_length, save_segment_clips, AddGaussianNoise, AddSaltAndPepperNoise
+from .video_process import get_video_length, save_segment_clips
 
 model_creaters = {
     "mvit_v1_b": mvit_v1_b,
