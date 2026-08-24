@@ -81,11 +81,16 @@ class Video_Analyzer(torch.nn.Module):
                        stride: int,
                        fps: int = 30,
                        width: int = 224,
-                       height: int = 224) -> tuple[Generator[torch.Tensor, None, None], int]:
+                       height: int = 224,
+                       max_video_min: int = 45) -> tuple[Generator[torch.Tensor, None, None], int]:
 
         vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=2)
         frame_indices = torch.arange(0, len(vr), step=vr.get_avg_fps() / fps).long()
         total_frames = len(frame_indices)
+        video_min = total_frames/fps/60
+
+        if max_video_min<video_min:
+            raise MAX_VIDEO_MINUTE_ERROR(max_video_min, video_min)
 
         if total_frames < clip_size:
             raise ValueError(f"Video too short. Total frame ({total_frames}) < clip_size ({clip_size})")
@@ -132,7 +137,6 @@ class Video_Analyzer(torch.nn.Module):
         x = x.permute(0, 4, 1, 2, 3).contiguous() # [B, C, T, H, W]
         return x
 
-
     @torch.no_grad()
     def analyze(self, 
                 video_path: str, 
@@ -173,7 +177,8 @@ class Video_Analyzer(torch.nn.Module):
                 
                 if len(mini_batch) == batch_size:
                     batch_tensor = torch.stack(mini_batch).to(device) # [B, T, H, W, C]
-                    batch_tensor = self.preprocess(batch_tensor) # [B, C, T, H, W]
+                    batch_tensor = self.preprocess(batch_tensor) # [B, C, T, H, W] (T = clip_size)
+                    
                     batch_scores = self.forward(batch_tensor).detach().cpu().float()
                     scores.append(batch_scores)
                     
@@ -184,6 +189,7 @@ class Video_Analyzer(torch.nn.Module):
             if len(mini_batch) > 0:
                 batch_tensor = torch.stack(mini_batch).to(device)
                 batch_tensor = self.preprocess(batch_tensor)
+                
                 batch_scores = self.forward(batch_tensor).detach().cpu().float()
                 scores.append(batch_scores)
                 
@@ -195,9 +201,8 @@ class Video_Analyzer(torch.nn.Module):
         finally:
             pbar.close()
 
-        # Create Abnormal Segments
         return self.create_clips(
-                    torch.concat(scores, dim=0), # [NxB, 1]
+                    torch.concat(scores, dim=0), 
                     get_video_length(video_path),
                     video_path,
                     save_dir,
@@ -294,7 +299,7 @@ class Video_Analyzer(torch.nn.Module):
 
         save_paths = []
 
-        if final_segments and (save_clips or save_graph):
+        if save_clips or save_graph:
             basename = os.path.basename(video_path)
             save_root = os.path.join(save_dir, os.path.splitext(basename)[0])
             os.makedirs(save_root, exist_ok=True)
@@ -319,41 +324,44 @@ class Video_Analyzer(torch.nn.Module):
 
     @torch.no_grad()
     def trt_forward(self, x: torch.Tensor) -> torch.Tensor:
+
         if not hasattr(self, "trt_context") or self.trt_context is None:
-            raise RuntimeError("TensorRT context bulunamadı! Önce export_trt() veya load_trt() çalıştırın.")
+            raise RuntimeError("TensorRT context not found!")
 
         if x.device.type != "cuda":
             x = x.to("cuda", non_blocking=True)
-        if x.dtype != torch.uint8:
-            x = x.to(torch.uint8)
+            
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
         x = x.contiguous()
 
-        NC, CS, C, H, W = x.shape
+        B, C, T, H, W = x.shape
         stream = torch.cuda.current_stream()
 
         if hasattr(self.trt_context, "set_tensor_address"):
-            self.trt_context.set_input_shape("video_segment", (NC, CS, C, H, W))
-            output = torch.empty((1,), dtype=torch.float32, device="cuda")
+            self.trt_context.set_input_shape("video_segment", (B, C, T, H, W))
+            output = torch.empty((B, 1), dtype=torch.float32, device="cuda")
+            
             self.trt_context.set_tensor_address("video_segment", x.data_ptr())
             self.trt_context.set_tensor_address("score", output.data_ptr())
             self.trt_context.execute_async_v3(stream_handle=stream.cuda_stream)
 
         return output
     
-    def export_onnx(self, file_path: str, imgsz: int | tuple[int, int] = 224) -> tuple:
+    def export_onnx(self, file_path: str, batch_size: int, imgsz: int | tuple[int, int] = 224) -> tuple:
         import onnx
         import onnxsim
 
         self.eval().cpu()
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
 
-        CS = self.clip_size
+        B = batch_size
+        T = self.clip_size
         H, W = (imgsz, imgsz) if isinstance(imgsz, int) else imgsz
         
-        shape = [self.max_clips_per_segment, CS, 3, H, W]
+        shape = [B, 3, T, H, W]
         
-        dummy_input = torch.randint(0, 256, shape, dtype=torch.uint8, device="cpu")
-        dummy_input = self.transforms(dummy_input)
+        dummy_input = torch.rand(*shape, dtype=torch.float32, device="cpu")
 
         torch.onnx.export(
             self,
@@ -361,37 +369,50 @@ class Video_Analyzer(torch.nn.Module):
             file_path,
             input_names=["video_segment"],
             output_names=["score"],
-            dynamic_axes={'video_segment': {0: 'num_clips'}},
+            dynamic_axes={
+                'video_segment': {0: 'batch_size'}, 
+                'score': {0: 'batch_size'}
+            },
             opset_version=19,
             do_constant_folding=True,
         )
 
         onnx_model = onnx.load(file_path)
         onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
-        onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"video_segment": [1, 3, CS, H, W]})
+        
+        onnx_model, check = onnxsim.simplify(onnx_model, test_input_shapes={"video_segment": [B, 3, T, H, W]})
         if check:
             onnx.save(onnx_model, file_path)
+        else:
+            print("[Warn] ONNXSIM error")
 
         return shape
 
-    def export_trt(self, imgsz: int | tuple[int, int] = 224, fp16: bool = True):
+    def export_trt(self, 
+                   model_path:os.PathLike,
+                   batch_size: int, 
+                   imgsz: int | tuple[int, int] = 224):
         import tensorrt as trt
 
         self.eval().cpu()
-        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+        TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
+
+        dirname = os.path.dirname(model_path)
+        os.makedirs(dirname, exist_ok=True)
+        trt_file_path = model_path + ".plan"
+        onnx_file_path = model_path + ".onnx"
         
-        path = "optimized_models/model"
-        trt_file_path = path + ".plan"
-        onnx_file_path = path + ".onnx"
 
         if os.path.exists(trt_file_path):
+            print(f"TRT Plan file found, loading: {trt_file_path}")
             return self.load_trt(trt_file_path, trt.Runtime(TRT_LOGGER))
             
-        _, CS, _, H, W = self.export_onnx(onnx_file_path, imgsz)
+        shape = self.export_onnx(onnx_file_path, batch_size, imgsz)
+        _, C, T, H, W = shape
 
-        min_shape = (1, 3, CS, H, W)
-        opt_shape = (max(1, self.max_clips_per_segment // 2), 3, CS, H, W)
-        max_shape = (self.max_clips_per_segment, 3, CS, H, W)
+        min_shape = (1, C, T, H, W)
+        opt_shape = (max(1, batch_size // 2), C, T, H, W)
+        max_shape = (batch_size, C, T, H, W)
 
         def build_engine(onnx_path, plan_path):
             builder = trt.Builder(TRT_LOGGER)
@@ -420,11 +441,18 @@ class Video_Analyzer(torch.nn.Module):
 
             with open(plan_path, "wb") as f:
                 f.write(engine_bytes)
+            print(f"TRT Plan created: {plan_path}")
 
         build_engine(onnx_file_path, trt_file_path)
         self.load_trt(trt_file_path, trt.Runtime(TRT_LOGGER))
 
-    def load_trt(self, file_name: os.PathLike, runtime):
+    def load_trt(self, file_name: os.PathLike, runtime=None):
+        import tensorrt as trt
+        
+        if runtime is None:
+            TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+            runtime = trt.Runtime(TRT_LOGGER)
+            
         with open(file_name, 'rb') as f:
             self.trt_engine = runtime.deserialize_cuda_engine(f.read())
             
@@ -475,7 +503,6 @@ class Video_Analyzer(torch.nn.Module):
             raise MODEL_HAS_NO_CLASSIFIER_ERROR
 
 @torch.inference_mode()
-@torch.inference_mode()
 def extract_feats(analyzer: Video_Analyzer,
                   video_paths: list,
                   save_dir: str,
@@ -483,6 +510,7 @@ def extract_feats(analyzer: Video_Analyzer,
                   width: int,
                   height: int,
                   batch: int,
+                  max_video_min: int,
                   save_debug_video: bool,
                   augmentation: v2.Compose = None):
     
@@ -508,7 +536,7 @@ def extract_feats(analyzer: Video_Analyzer,
             f"Video: {video_idx + 1:04d}/{len_videos} [{os.path.basename(vp)}] | "
             f"Processed Clips: {current_clip:03d}/{total_clips} | "
         )
-        print(info, end='\r', flush=True)
+        print(info, end='\n', flush=True)
  
     for video_idx, vp in enumerate(video_paths):
         base_name = os.path.splitext(os.path.basename(vp))[0]
@@ -525,7 +553,8 @@ def extract_feats(analyzer: Video_Analyzer,
                 stride=analyzer.stride,
                 fps=fps, 
                 width=W, 
-                height=H
+                height=H,
+                max_video_min=max_video_min
             )
 
             mini_batch = []
@@ -569,10 +598,6 @@ def extract_feats(analyzer: Video_Analyzer,
                 if len(mini_batch) == batch:
                     batch_tensor = torch.stack(mini_batch).to("cuda") # [B, T, H, W, C]
                     batch_tensor = analyzer.preprocess(batch_tensor)  # [B, C, T, H, W]
-                    
-                    if hasattr(analyzer, 'transforms') and analyzer.transforms is not None:
-                        batch_tensor = analyzer.transforms(batch_tensor)
-                    
                     feats = extractor(batch_tensor) 
                     video_features.append(feats.detach().cpu())
                     

@@ -18,12 +18,12 @@ class SegmentRankingModel(nn.Module):
         super(SegmentRankingModel, self).__init__()
 
         self.mlp = nn.Sequential(
-            nn.Linear(input_dim, 344),
+            nn.Linear(input_dim, 512),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.5),
 
-            nn.Linear(344, 256),
-            nn.Dropout(0.6),
+            nn.Linear(512, 256),
+            nn.Dropout(0.5),
 
             nn.Linear(256, 1),
             nn.Sigmoid()
@@ -32,7 +32,7 @@ class SegmentRankingModel(nn.Module):
     def forward(self, x):
         
         if self.training:
-            noise = torch.rand_like(x) * 0.01 - torch.rand_like(x) * 0.01
+            noise = torch.rand_like(x) * 0.000 - torch.rand_like(x) * 0.000
             x = x + noise
 
         x = torch.nn.functional.normalize(x, dim=1)
