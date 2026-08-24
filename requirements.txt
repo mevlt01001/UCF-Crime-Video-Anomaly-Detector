@@ -1,0 +1,15 @@
+decord
+langchain
+langchain_core
+langchain_openai
+matplotlib
+numpy
+onnx
+onnxsim
+opencv_python
+pandas
+tensorrt
+tensorrt_cu13
+torch
+torchvision
+tqdm
