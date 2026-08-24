@@ -565,6 +565,12 @@ def extract_feats(analyzer: Video_Analyzer,
                 debug_writer = cv2.VideoWriter(debug_save_path, fourcc, fps, (W, H))
 
             for clip_idx, clip in enumerate(clip_generator):
+
+                if augmentation:
+                    clip = clip.permute(0, 3, 1, 2)
+                    clip = augmentation(clip)
+                    clip = clip.permute(0, 2, 3, 1)
+                    
                 if save_debug_video and debug_writer is not None:
                     T_frames, h_clip, w_clip, C_channels = clip.shape
                     clip_np = clip.cpu().numpy()
@@ -589,10 +595,6 @@ def extract_feats(analyzer: Video_Analyzer,
                             
                         debug_writer.write(frame_bgr)
 
-                if augmentation:
-                    clip = clip.permute(0, 3, 1, 2)
-                    clip = augmentation(clip)
-                    clip = clip.permute(0, 2, 3, 1)
 
                 mini_batch.append(clip)
                 if len(mini_batch) == batch:
