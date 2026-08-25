@@ -13,6 +13,13 @@ __all__ = [
     "get_report_dir",
     "generate_frames",
 ]
+from .video_process import (
+    fetch_video_patches, 
+    get_video_length, 
+    save_segment_clips, 
+    get_report_dir, 
+    generate_frames
+)
 
 _LAZY = {
     "VLM_Manager": (".vlm", "VLM_Manager"),

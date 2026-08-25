@@ -10,7 +10,7 @@ from datetime import datetime
 from collections import defaultdict
 from torch.utils.data import Dataset, DataLoader
 
-from .video_process import get_report_dir
+from .video_process import fetch_video_patches, get_report_dir
 from .visualization_tools import plot_anomaly_timeline
 
 class SegmentRankingModel(nn.Module):
