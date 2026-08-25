@@ -1,15 +1,28 @@
-decord
-langchain
-langchain_core
-langchain_openai
-matplotlib
-numpy
-onnx
-onnxsim
-opencv_python
-pandas
-tensorrt
-tensorrt_cu13
-torch
-torchvision
-tqdm
+# Core (pinned to this machine's working set unless noted)
+numpy==2.0.2
+opencv-python==4.13.0.92
+matplotlib==3.9.4
+tqdm==4.68.2
+torch==2.8.0
+torchvision==0.23.0
+
+# Video decode: Apple Silicon. CUDA/Linux sunucuda `decord` kullanın.
+eva-decord==0.6.1
+
+# LLM / agent
+python-dotenv==1.1.0
+pydantic==2.13.4
+openai==2.48.0
+langchain==0.3.27
+langchain-core==0.3.86
+langchain-openai==0.3.35
+langgraph==0.6.11
+
+# Lab UI
+gradio==4.44.1
+
+# ONNX / TensorRT export — sadece CUDA makinede, pip install -r ile kurulmaz
+# onnx
+# onnxsim
+# tensorrt
+# tensorrt-cu13

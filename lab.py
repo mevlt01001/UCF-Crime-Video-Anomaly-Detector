@@ -196,6 +196,107 @@ def run_analyzer(video, threshold, clip_size, overlap, fps):
     return f"{text}\n\n---\nsüre: {ms:.0f} ms", graph
 
 
+def _tool_calls_line(msg) -> str:
+    calls = getattr(msg, "tool_calls", None) or []
+    if not calls:
+        return ""
+    parts = []
+    for call in calls:
+        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "?")
+        args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
+        parts.append(f"{name}({args})")
+    return " | ".join(parts)
+
+
+def _content_preview(msg, limit: int = 600) -> str:
+    content = getattr(msg, "content", "") or ""
+    if not isinstance(content, str):
+        content = str(content)
+    content = content.strip()
+    if len(content) > limit:
+        return content[:limit] + "…"
+    return content
+
+
+def run_agent(message, history, lc_messages, video):
+    from langchain_core.messages import HumanMessage
+
+    message = (message or "").strip()
+    history = list(history or [])
+    lc_messages = list(lc_messages or [])
+    if not message:
+        return history, "", lc_messages, "Mesaj boş."
+
+    path = _path(video)
+    content = message if not path else f"{message}\n\n[Hedef video: {path}]"
+    lc_messages.append(HumanMessage(content=content))
+
+    from utils.agents import video_agent_app
+
+    initial_state = {
+        "user_query": message,
+        "video_path": path or "",
+        "video_paths": [path] if path else [],
+        "image_paths": [],
+        "plan": "",
+        "messages": lc_messages,
+        "feedback": "",
+        "final_answer": "",
+        "tool_rounds": 0,
+        "review_loops": 0,
+    }
+
+    traces = []
+    final_answer = ""
+    t0 = time.perf_counter()
+    try:
+        for event in video_agent_app.stream(initial_state, {"recursion_limit": 40}):
+            for node_name, update in event.items():
+                line = f"[{node_name}]"
+                if node_name == "planner" and update.get("plan"):
+                    line += f"\n{update['plan']}"
+                elif node_name == "executor":
+                    msgs = update.get("messages") or []
+                    last = msgs[-1] if msgs else None
+                    calls = _tool_calls_line(last) if last else ""
+                    if calls:
+                        line += f" tool: {calls}"
+                    else:
+                        preview = _content_preview(last) if last else ""
+                        if preview:
+                            line += f"\n{preview}"
+                    if msgs:
+                        lc_messages = list(lc_messages) + list(msgs)
+                elif node_name == "tools":
+                    msgs = update.get("messages") or []
+                    for tool_msg in msgs:
+                        preview = _content_preview(tool_msg, 800)
+                        line += f"\n{preview}"
+                    if msgs:
+                        lc_messages = list(lc_messages) + list(msgs)
+                elif node_name == "reviewer":
+                    if update.get("feedback"):
+                        line += f" feedback: {update['feedback']}"
+                    if update.get("final_answer"):
+                        final_answer = update["final_answer"]
+                        line += f"\n{final_answer}"
+                traces.append(line)
+    except Exception as e:
+        final_answer = f"[HATA] {e}"
+        traces.append(final_answer)
+
+    ms = (time.perf_counter() - t0) * 1000
+    if not final_answer:
+        final_answer = "(nihai cevap yok — trace'e bak)"
+    history.append([message, final_answer])
+    trace_text = "\n\n".join(traces) + f"\n\n---\nsüre: {ms:.0f} ms"
+    return history, "", lc_messages, trace_text
+
+
+def clear_agent():
+    return [], "", [], "Sohbet sıfırlandı."
+
+
 with gr.Blocks(title="lab") as demo:
     gr.Markdown("Yerel test. Key `.env` içinde. Çıktı: `_stuff/lab_runs/`")
     with gr.Tab("LLM"):
@@ -224,8 +325,51 @@ with gr.Blocks(title="lab") as demo:
         gr.Button("çalıştır").click(
             run_analyzer, [av, th, clip_in, overlap_in, fps_in], [ao, img]
         )
+    with gr.Tab("Agent"):
+        gr.Markdown(
+            "LangGraph smoke: planner → executor → tool → reviewer. "
+            "Video yükle, yola mesajda gerek yok; state `video_path` olarak gider. "
+            "Analyzer tool ilk çağrıda modeli yükler (yavaş)."
+        )
+        agent_video = gr.Video(label="hedef video (opsiyonel)")
+        agent_chat = gr.Chatbot(label="sohbet", height=360)
+        agent_msg = gr.Textbox(
+            label="mesaj",
+            placeholder="merhaba  |  video kaç saniye  |  anomalileri bul  |  12-18. saniyede ne oluyor",
+            lines=2,
+        )
+        agent_lc = gr.State([])
+        with gr.Row():
+            agent_send = gr.Button("gönder", variant="primary")
+            agent_clear = gr.Button("sohbeti sil")
+        agent_trace = gr.Textbox(label="node trace", lines=14)
+        gr.Examples(
+            examples=[
+                ["merhaba"],
+                ["bu videonun süresini ve fps değerini söyle"],
+                ["bu videoda anormal bir durum var mı, varsa kaçıncı saniyelerde?"],
+                ["12. saniye ile 18. saniye arasında ne oluyor?"],
+            ],
+            inputs=[agent_msg],
+            label="örnek input",
+        )
+        agent_send.click(
+            run_agent,
+            [agent_msg, agent_chat, agent_lc, agent_video],
+            [agent_chat, agent_msg, agent_lc, agent_trace],
+        )
+        agent_msg.submit(
+            run_agent,
+            [agent_msg, agent_chat, agent_lc, agent_video],
+            [agent_chat, agent_msg, agent_lc, agent_trace],
+        )
+        agent_clear.click(
+            clear_agent,
+            outputs=[agent_chat, agent_msg, agent_lc, agent_trace],
+        )
 
 if __name__ == "__main__":
+    demo.queue()
     demo.launch(
         server_name="127.0.0.1",
         server_port=7860,

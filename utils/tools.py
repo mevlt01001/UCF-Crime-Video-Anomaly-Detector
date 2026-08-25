@@ -1,49 +1,90 @@
+from __future__ import annotations
+
 import os
 import gc
+import json
 import torch
 import numpy as np
 
-from tqdm import tqdm
+from pathlib import Path
 from dotenv import load_dotenv
 from langchain.tools import tool
 from decord import VideoReader, cpu
-from typing import Generator, Tuple
+from typing import Generator, Optional
 
-from utils import Video_Analyzer, get_video_length, VLM_Manager, generate_frames
+from utils.env import env_first, env_get, env_int
+from utils.video_analyzer_model import Video_Analyzer, pick_device
+from utils.video_process import generate_frames
+from utils.vlm import VLM_Manager
+
 load_dotenv()
 
-AS_MODEL_NAME = os.environ.get("AS_MODEL_NAME")
-AS_OVERLAP = os.environ.get("AS_OVERLAP")
-AS_FC_CHECKPOINT = os.environ.get("AS_FC_CHECKPOINT")
-AS_TRT_PLAN_PATH = os.environ.get("AS_TRT_PLAN_PATH")
-AS_BATCH = os.environ.get("AS_BATCH")
-EVREN_API_KEY = os.environ.get("EVREN_API_KEY")
-EVREN_URL = os.environ.get("EVREN_URL")
-VLM_SYSTEM_PROMT = os.environ.get("VLM_SYSTEM_PROMT")
-AS_CLIP_SIZE = os.environ.get("AS_CLIP_SIZE")
-AS_STRIDE = os.environ.get("AS_STRIDE")
-AS_FPS = os.environ.get("AS_FPS")
-AS_WIDTH = os.environ.get("AS_WIDTH")
-AS_HEIGHT = os.environ.get("AS_HEIGHT")
+AS_MODEL_NAME = env_first("AS_MODEL_NAME", "ANALYZER_BACKBONE") or "s3d"
+AS_OVERLAP = env_int("AS_OVERLAP", 8)
+AS_FC_CHECKPOINT = env_first("AS_FC_CHECKPOINT", "ANALYZER_FC_CHECKPOINT") or None
+AS_TRT_PLAN_PATH = env_get("AS_TRT_PLAN_PATH") or None
+AS_BATCH = env_int("AS_BATCH", 4)
+EVREN_API_KEY = env_get("EVREN_API_KEY") or None
+EVREN_URL = env_first("EVREN_URL", "EVREN_BASE_URL") or None
+VLM_SYSTEM_PROMT = env_get("VLM_SYSTEM_PROMT") or None
+AS_CLIP_SIZE = env_int("AS_CLIP_SIZE", 16)
+AS_FPS = env_int("AS_FPS", 30)
+AS_WIDTH = env_int("AS_WIDTH", 224)
+AS_HEIGHT = env_int("AS_HEIGHT", 224)
+AS_STRIDE = env_int("AS_STRIDE", AS_CLIP_SIZE - AS_OVERLAP)
+
+DEVICE = pick_device()
+_ROOT = Path(__file__).resolve().parents[1]
+_anomaly_segment_model: Optional[Video_Analyzer] = None
 
 
-# ANOMALY SEGMETNER MODEL
-anomaly_segment_model = Video_Analyzer(
-    AS_MODEL_NAME, AS_CLIP_SIZE, 
-    AS_OVERLAP, AS_FC_CHECKPOINT
-).eval()
+def _resolve_checkpoint() -> Optional[str]:
+    for candidate in (
+        AS_FC_CHECKPOINT,
+        env_get("ANALYZER_FC_CHECKPOINT"),
+        "Checkpoint/best_loss_fold_3.pt",
+    ):
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = _ROOT / path
+        if path.is_file():
+            return str(path)
+    return AS_FC_CHECKPOINT
 
-anomaly_segment_model.export_trt(AS_TRT_PLAN_PATH, 
-                                 AS_BATCH, (AS_HEIGHT, AS_WIDTH))
-# ANOMALY SEGMETNER MODEL
 
-# VISION LANGUAGE MODEL
+def get_anomaly_segment_model() -> Video_Analyzer:
+    """Analyzer'ı ilk tool çağrısında yükle. TRT yalnız CUDA'da."""
+    global _anomaly_segment_model
+    if _anomaly_segment_model is not None:
+        return _anomaly_segment_model
+
+    ckpt = _resolve_checkpoint()
+    if ckpt and not Path(ckpt).is_file():
+        raise FileNotFoundError(f"FC checkpoint yok: {ckpt}")
+
+    print(f"[info] Analyzer yükleniyor device={DEVICE} ckpt={ckpt}")
+    model = Video_Analyzer(
+        AS_MODEL_NAME,
+        AS_CLIP_SIZE,
+        AS_OVERLAP,
+        ckpt,
+    ).eval()
+    model.to(DEVICE)
+    if DEVICE.type == "cuda" and AS_TRT_PLAN_PATH:
+        model.export_trt(AS_TRT_PLAN_PATH, AS_BATCH, (AS_HEIGHT, AS_WIDTH))
+    else:
+        print(f"[info] Analyzer {DEVICE}; TensorRT atlandı.")
+    _anomaly_segment_model = model
+    return model
+
+
 vlm = VLM_Manager(
     api_key=EVREN_API_KEY,
     base_url=EVREN_URL,
-    system_prompt=VLM_SYSTEM_PROMT
+    system_prompt=VLM_SYSTEM_PROMT,
 )
-# VISION LANGUAGE MODEL
 
 FILE_NOT_FOUND_ERROR = lambda f: f"Beliritlen {f} dosyası bulunamadı"
 VIDEO_TOO_SHORT_ERROR = lambda vp, ms, vs : f"Belirtilen {vp} dosyası video analiz segmentasyonu gerçekleştirebilemk için çok kısa! Lütfen {ms} saniyeden daha fazla olan video ile deneyin. Sizin videonuz {vs} saniye yalnızca."
@@ -88,12 +129,12 @@ def create_clip_generator(
         height: int) -> tuple[Generator[np.array, None, None], int]|str:
 
     vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height, num_threads=2)
-    org_fps = vr.get_avg_fps()
-    frame_indices = np.arange(start=0, stop=len(vr), step=vr.get_avg_fps()/fps).long()
+    org_fps = vr.get_avg_fps() or 1.0
+    frame_indices = torch.arange(0, len(vr), step=org_fps / fps).long()
     total_frames = len(frame_indices)
 
-    video_seconds = org_fps*len(vr)
-    minimum_seconds = clip_size/fps
+    video_seconds = len(vr) / org_fps
+    minimum_seconds = clip_size / fps
 
     if video_seconds < minimum_seconds:
         return VIDEO_TOO_SHORT_ERROR(video_path, minimum_seconds, video_seconds)
@@ -123,61 +164,39 @@ def run_abnormal_event_segmenter(video_path: str) -> str:
     Kavga, kaza, hırsızlık, yangın veya anormal insan/araç hareketlerini tespit etmek için KESİNLİKLE bu aracı kullanın.
     Çıktı olarak anormal anların zaman damgalarını (timestamp) ve ilgili video kesitlerinin yollarını döner.
     """
+    if not video_path or not os.path.exists(video_path):
+        return FILE_NOT_FOUND_ERROR(video_path)
 
-    out = create_clip_generator(
-        video_path,
-        AS_CLIP_SIZE,
-        AS_STRIDE,
-        AS_FPS,
-        AS_WIDTH,
-        AS_HEIGHT
-    )
-    
-    if isinstance(str, out):
-        return out
-
-    clip_generator, total_clips = out
-
-    mini_batch = [] 
-    scores = [] 
-    pbar = tqdm(
-        total=total_clips, 
-        desc=f"Processing {os.path.basename(video_path)} for abnormal events"
-    )
-
-    def inference(mini_batch):
-        batch_tensor = torch.stack(mini_batch).to("cuda")
-        batch_tensor = anomaly_segment_model.preprocess(batch_tensor)
-        batch_scores = anomaly_segment_model.forward(batch_tensor).detach().cpu().float()
-        scores.append(batch_scores)
-    
     try:
-        for clip in clip_generator: # [T, H, W, C]
-            mini_batch.append(clip)
-            
-            if len(mini_batch) == AS_BATCH:
-                inference(mini_batch)
-                pbar.update(len(mini_batch))
-
-                mini_batch = []
-                torch.cuda.empty_cache()
-
-        if len(mini_batch) > 0:
-            inference(mini_batch)
-            pbar.update(len(mini_batch))
-
+        model = get_anomaly_segment_model()
+        save_dir = str(_ROOT / "_stuff" / "lab_runs")
+        segments = model.analyze(
+            video_path=video_path,
+            width=AS_WIDTH,
+            height=AS_HEIGHT,
+            fps=AS_FPS,
+            batch_size=AS_BATCH,
+            threshold=0.3,
+            save_graph=True,
+            save_clips=False,
+            save_dir=save_dir,
+        )
+        if not segments:
+            return (
+                f"Analiz tamamlandı. {video_path} içinde eşik üstü anormal segment bulunamadı "
+                "(threshold=0.3). Video normal görünebilir veya skorlar eşiğin altında kalmış olabilir."
+            )
+        return json.dumps(
+            {
+                "video_path": video_path,
+                "segment_count": len(segments),
+                "segments": segments,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
-        pbar.close()
-        return f"\nGot an error [{video_path}]: {e}"
-    finally:
-        pbar.close()
-
-    return anomaly_segment_model.create_clips(
-        torch.concat(scores, dim=0), 
-        get_video_length(video_path),
-        video_path,"save_dir",
-        0.5,3.0,2.0,False,False
-    )
+        print(f"[segmenter hata] {type(e).__name__}: {e}")
+        return f"Got an error [{video_path}]: {type(e).__name__}: {e}"
 
 def parse_time_to_frame_id(number:int, unit:str, len_frames, fps) -> int:
     unit_map = {
@@ -216,7 +235,8 @@ def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_se
             max_frames=128
         )
         
-        response = vlm.run(query=query, frames=frames)
+        vlm.reset_context()
+        response = vlm.run(text=query, frames=frames)
         
         del frames
         gc.collect()

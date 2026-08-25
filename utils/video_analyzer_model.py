@@ -426,6 +426,9 @@ class Video_Analyzer(torch.nn.Module):
                    model_path:os.PathLike,
                    batch_size: int, 
                    imgsz: int | tuple[int, int] = 224):
+        if not torch.cuda.is_available():
+            print("[info] TensorRT NVIDIA CUDA ister; bu cihazda atlandı (MPS/CPU).")
+            return None
         import tensorrt as trt
 
         self.eval().cpu()

@@ -31,6 +31,21 @@ def env_get(name: str, default: Optional[str] = None) -> str:
     return (value or "").strip()
 
 
+def env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = env_get(name)
+        if value:
+            return value
+    return default
+
+
+def env_int(name: str, default: int) -> int:
+    raw = env_get(name)
+    if not raw:
+        return default
+    return int(raw)
+
+
 def env_require(name: str) -> str:
     value = env_get(name)
     if not value:

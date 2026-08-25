@@ -28,14 +28,17 @@ def main():
             "messages": chat_history,
             "feedback": "",
             "final_answer": "",
-            "replan_reason": "",
-            "replan_count": 0,
+            "video_path": "",
+            "video_paths": [],
+            "image_paths": [],
+            "tool_rounds": 0,
+            "review_loops": 0,
         }
 
         print("\n[Sistem Düşünüyor...]")
         
         final_state = None
-        for event in video_agent_app.stream(initial_state, {"recursion_limit": 105}):
+        for event in video_agent_app.stream(initial_state, {"recursion_limit": 40}):
             for node_name, node_state in event.items():
                 final_state = node_state
                 

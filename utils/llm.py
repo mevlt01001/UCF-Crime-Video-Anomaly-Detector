@@ -3,7 +3,7 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from .env import env_get, env_require
+from .env import env_first, env_require
 
 
 class LLM_Manager:
@@ -14,10 +14,13 @@ class LLM_Manager:
         model_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ):
+        base = base_url or env_first("EVREN_BASE_URL", "EVREN_URL")
+        if not base:
+            raise RuntimeError("EVREN_BASE_URL veya EVREN_URL eksik. .env dosyasını kontrol et.")
         self.llm = ChatOpenAI(
-            model=model_name or env_get("EVREN_LLM_MODEL", "llm-fast"),
+            model=model_name or env_first("EVREN_LLM_MODEL", "LLM_NAME", default="llm-fast"),
             api_key=api_key or env_require("EVREN_API_KEY"),
-            base_url=base_url or env_require("EVREN_BASE_URL"),
+            base_url=base,
             temperature=0.7,
         )
 

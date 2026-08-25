@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional
 from openai import OpenAI
 
-from .env import env_get, env_require
+from .env import env_first, env_get, env_require
 
 # EVREN vlm: image_url yasak ("At most 0 image(s)"). video_url zorunlu.
 # 1 kare / yüksek çözünürlük Qwen3VLProcessor'ı kırıyor.
@@ -28,12 +28,15 @@ class VLM_Manager:
         system_prompt: str = None,
         temperature: float = 0.0,
     ):
-        self.model_name = model_name or env_get("EVREN_VLM_MODEL", "vlm")
+        self.model_name = model_name or env_first("EVREN_VLM_MODEL", "VLM_NAME", default="vlm")
         self.temperature = temperature
         self.system_prompt = system_prompt
+        base = base_url or env_first("EVREN_BASE_URL", "EVREN_URL")
+        if not base:
+            raise RuntimeError("EVREN_BASE_URL veya EVREN_URL eksik. .env dosyasını kontrol et.")
         self.client = OpenAI(
             api_key=api_key or env_require("EVREN_API_KEY"),
-            base_url=base_url or env_require("EVREN_BASE_URL"),
+            base_url=base,
             timeout=1800,
         )
         self.history = []
