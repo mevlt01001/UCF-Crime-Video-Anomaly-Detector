@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import gc
 import os
 import cv2
 import torch
 import numpy as np
+from typing import List, Optional
+
 from decord import VideoReader, cpu
 
 
@@ -25,7 +29,7 @@ def get_report_dir(video_path: str, base_dir: str = "ABNORMAL_DETECTION") -> str
 def save_segment_clips(video_path: str,
                        segments: list[dict],
                        save_dir: str,
-                       prefix: str = "segment") -> list[str | None]:
+                       prefix: str = "segment") -> List[Optional[str]]:
     """
     Verilen `segments` listesindeki (start_time, end_time) araliklarina gore
     orijinal videodan kirpilmis klipleri `save_dir` klasorune .mp4 olarak kaydeder.

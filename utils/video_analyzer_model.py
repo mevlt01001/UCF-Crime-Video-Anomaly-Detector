@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import gc
 import os
+
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import cv2
 import math
 import torch
@@ -55,6 +60,25 @@ MAX_VIDEO_MINUTE_ERROR = lambda max_video_minute, video_minute: MemoryError(f"Ma
 NO_SEGMENT_ERROR = ValueError("There is no segment in this video.")
 VIDEO_TOO_SHORT_ERROR = lambda vp, f, s : ValueError(f"Video {vp} is too short ({f} frames) to be divided into {s} segments.")
 
+
+def pick_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def unwrap_fc_state_dict(checkpoint):
+    if isinstance(checkpoint, (str, os.PathLike)):
+        checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        checkpoint = checkpoint["state_dict"]
+    if not isinstance(checkpoint, dict):
+        raise ValueError("FC checkpoint dict veya .pt yolu olmalı.")
+    return checkpoint
+
+
 class Video_Analyzer(torch.nn.Module):
     def __init__(self,
                 video_classifier_model: Optional[MViT | VideoResNet | S3D | SwinTransformer3d | str],
@@ -72,7 +96,9 @@ class Video_Analyzer(torch.nn.Module):
         self.__set_video_classifier_feature_dim()
         self.segment_ranker_model = SegmentRankingModel(self.feature_dim)
         if fc_layer_checkpoint:
-            self.segment_ranker_model.load_state_dict(fc_layer_checkpoint)
+            self.segment_ranker_model.load_state_dict(
+                unwrap_fc_state_dict(fc_layer_checkpoint)
+            )
 
     @staticmethod
     @torch.no_grad()
@@ -152,8 +178,15 @@ class Video_Analyzer(torch.nn.Module):
                 save_dir: str = "Video_Analyses"
                 ):
 
+        self.eval()
         is_trt = hasattr(self, "trt_context") and self.trt_context is not None
-        device = "cuda" if is_trt else (next(self.parameters()).device.type if len(list(self.parameters())) > 0 else "cuda")
+        if is_trt:
+            device = torch.device("cuda")
+        else:
+            try:
+                device = next(self.parameters()).device
+            except StopIteration:
+                device = pick_device()
 
         os.makedirs(save_dir, exist_ok=True)
         video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -184,7 +217,8 @@ class Video_Analyzer(torch.nn.Module):
                     
                     pbar.update(len(mini_batch))
                     mini_batch = []
-                    torch.cuda.empty_cache()
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
 
             if len(mini_batch) > 0:
                 batch_tensor = torch.stack(mini_batch).to(device)
@@ -472,7 +506,7 @@ class Video_Analyzer(torch.nn.Module):
             else: 
                 # If specified model name does not available
                 raise MODEL_SPECIFY_ERROR(video_classifier)
-        elif isinstance (video_classifier, (MViT | VideoResNet | S3D | SwinTransformer3d)):
+        elif isinstance(video_classifier, (MViT, VideoResNet, S3D, SwinTransformer3d)):
             # If Specified model formed its class form
             self.feature_extractor = video_classifier
             self.video_classifier_name = video_classifier.__class__.__name__.lower()
