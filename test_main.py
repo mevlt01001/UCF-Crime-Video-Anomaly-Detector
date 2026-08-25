@@ -67,3 +67,4 @@ def main():
             chat_history = final_state["messages"] 
 
 if __name__ == "__main__":
+    main()
