@@ -57,6 +57,28 @@ def get_vr(video_path: str) -> VideoReader:
         video_cache[video_path] = VideoReader(video_path, ctx=cpu(0))
     return video_cache[video_path]
 
+def get_frame_id(video_path: str, number: int, unit: str) -> int:
+
+    unit_map= {
+        "saat": 3600,
+        "dakika": 60,
+        "saniye": 1
+    }
+
+    if not unit in unit_map:
+        print("Kullanılan birim anlaşılamadı.")
+
+    second = unit_map[unit]
+
+    seconds = int(number * second)
+
+    vr = VideoReader(video_path)
+    fps = vr.get_avg_fps()
+
+    frame_id = int(round(seconds * fps))
+
+    return frame_id
+
 def create_clip_generator(
         video_path: os.PathLike,
         clip_size: int,
