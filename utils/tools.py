@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import gc
 import json
+import subprocess
+import cv2
 import torch
 import numpy as np
 
@@ -12,10 +14,10 @@ from langchain.tools import tool
 from decord import VideoReader, cpu
 from typing import Generator, Optional
 
-from utils.env import env_first, env_get, env_int
+from utils.env import env_first, env_float, env_get, env_int
 from utils.video_analyzer_model import Video_Analyzer, pick_device
 from utils.video_process import generate_frames
-from utils.vlm import VLM_Manager
+from utils.vlm import VLM_MAX_FRAMES, VLM_Manager
 
 load_dotenv()
 
@@ -32,6 +34,7 @@ AS_FPS = env_int("AS_FPS", 30)
 AS_WIDTH = env_int("AS_WIDTH", 224)
 AS_HEIGHT = env_int("AS_HEIGHT", 224)
 AS_STRIDE = env_int("AS_STRIDE", AS_CLIP_SIZE - AS_OVERLAP)
+VLM_SOURCE_SAMPLE_FPS = env_float("VLM_SOURCE_SAMPLE_FPS", 5.0)
 
 DEVICE = pick_device()
 _ROOT = Path(__file__).resolve().parents[1]
@@ -80,11 +83,6 @@ def get_anomaly_segment_model() -> Video_Analyzer:
     return model
 
 
-vlm = VLM_Manager(
-    api_key=EVREN_API_KEY,
-    base_url=EVREN_URL,
-    system_prompt=VLM_SYSTEM_PROMT,
-)
 
 FILE_NOT_FOUND_ERROR = lambda f: f"Beliritlen {f} dosyası bulunamadı"
 VIDEO_TOO_SHORT_ERROR = lambda vp, ms, vs : f"Belirtilen {vp} dosyası video analiz segmentasyonu gerçekleştirebilemk için çok kısa! Lütfen {ms} saniyeden daha fazla olan video ile deneyin. Sizin videonuz {vs} saniye yalnızca."
@@ -226,22 +224,45 @@ def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_se
         return "Hata: start_sec, end_sec'den küçük olmalıdır."
 
     try:
+        vlm = VLM_Manager(
+            api_key=EVREN_API_KEY,
+            base_url=EVREN_URL,
+            system_prompt=VLM_SYSTEM_PROMT,
+        )
         frames, actual_start, actual_end = generate_frames(
             video_path=video_path,
             start_sec=start_sec,
             end_sec=end_sec,
             all_video=False,
-            FPS=5,
-            max_frames=128
+            FPS=VLM_SOURCE_SAMPLE_FPS,
+            max_frames=VLM_MAX_FRAMES
         )
-        
-        vlm.reset_context()
-        response = vlm.run(text=query, frames=frames)
+        source_time_context = (
+            "ZAMAN REFERANSI (zorunlu): İncelediğin geçici klip, kaynak videonun "
+            f"{actual_start:.2f}–{actual_end:.2f} saniye aralığından örneklenmiştir. "
+            f"Geçici klipte 0:00, kaynak videoda {actual_start:.2f}. saniyeye karşılık gelir. "
+            "Yanıtında zaman belirteceksen yalnızca kaynak video zamanını kullan; "
+            "geçici klibin 0:00, başlangıç veya ilk saniye ifadelerini kaynak videonun "
+            "başlangıcı gibi sunma.\n\n"
+            f"Kullanıcı sorusu: {query}"
+        )
+        # Kare zamanları FPS yuvarlaması nedeniyle birkaç salise kayabilir; geçici
+        # MP4 süresini kullanıcının/segmenterin istediği gerçek aralığa sabitle.
+        source_duration = max(0.0, end_sec - start_sec)
+        response = vlm.run(
+            text=source_time_context,
+            frames=frames,
+            source_duration=source_duration,
+        )
         
         del frames
         gc.collect()
         
-        return f"VLM Analiz Sonucu ({actual_start:.2f}sn - {actual_end:.2f}sn aralığı için): {response}"
+        return (
+            f"VLM Analiz Sonucu (kaynak video {actual_start:.2f}sn - "
+            f"{actual_end:.2f}sn aralığı için; geçici klip 0:00 = kaynak "
+            f"{actual_start:.2f}sn): {response}"
+        )
         
     except Exception as e:
         return f"VLM analizi sırasında hata oluştu: {str(e)}"
@@ -258,22 +279,66 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
     - end_sec: Kesimin biteceği saniye.
     - output_filename: Kaydedilecek dosyanın adı (örn: "kesilmiş_olay.mp4").
     """
+    if not video_path or not os.path.isfile(video_path):
+        return f"Video kesme işlemi başarısız: kaynak video bulunamadı: {video_path}"
+    if start_sec < 0:
+        return "Video kesme işlemi başarısız: start_sec negatif olamaz."
+    if end_sec <= start_sec:
+        return "Video kesme işlemi başarısız: end_sec, start_sec değerinden büyük olmalıdır."
+    if not (output_filename or "").strip():
+        return "Video kesme işlemi başarısız: output_filename boş olamaz."
+
+    output_path = Path(output_filename.strip()).expanduser()
+    if output_path.suffix.lower() != ".mp4":
+        output_path = Path(f"{output_path}.mp4")
+    if not output_path.parent.is_dir():
+        return f"Video kesme işlemi başarısız: çıktı klasörü bulunamadı: {output_path.parent}"
+
     try:
-        if not output_filename.endswith('.mp4'):
-            output_filename += '.mp4'
-            
-        import subprocess
         command = [
             'ffmpeg', '-y', 
             '-ss', str(start_sec), 
             '-i', video_path, 
             '-t', str(end_sec - start_sec), 
             '-c:v', 'copy', '-c:a', 'copy',
-            output_filename
+            str(output_path),
         ]
-        
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return f"Başarılı! Video {start_sec} - {end_sec} saniyeleri arası kesilip '{output_filename}' adıyla kaydedildi."
+
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if not output_path.is_file():
+            return "Video kesme işlemi başarısız: FFmpeg tamamlandı ancak çıktı dosyası oluşmadı."
+        if output_path.stat().st_size <= 0:
+            return "Video kesme işlemi başarısız: çıktı dosyası boş."
+
+        cap = cv2.VideoCapture(str(output_path))
+        try:
+            opened = cap.isOpened()
+            has_frame, _ = cap.read() if opened else (False, None)
+        finally:
+            cap.release()
+        if not opened or not has_frame:
+            return "Video kesme işlemi başarısız: çıktı dosyası geçerli bir video olarak okunamadı."
+
+        return (
+            f"Başarılı! Video {start_sec} - {end_sec} saniyeleri arası kesilip "
+            f"'{output_path}' adıyla kaydedildi."
+        )
+    except FileNotFoundError:
+        return "Video kesme işlemi başarısız: FFmpeg bulunamadı veya çalıştırılamadı."
+    except subprocess.TimeoutExpired:
+        return "Video kesme işlemi başarısız: FFmpeg 300 saniye içinde tamamlanamadı."
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or "FFmpeg hata ayrıntısı döndürmedi.").strip()
+        if len(detail) > 500:
+            detail = detail[-500:]
+        return f"Video kesme işlemi başarısız: FFmpeg hata verdi: {detail}"
     except Exception as e:
         return f"Video kesme işlemi başarısız: {str(e)}"
 

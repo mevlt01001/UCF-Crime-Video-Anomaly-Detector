@@ -1,4 +1,5 @@
 .env
+.venv
 *.pt
 *.pickle
 *.mp4

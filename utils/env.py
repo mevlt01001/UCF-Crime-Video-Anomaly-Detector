@@ -46,6 +46,13 @@ def env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def env_float(name: str, default: float) -> float:
+    raw = env_get(name)
+    if not raw:
+        return default
+    return float(raw)
+
+
 def env_require(name: str) -> str:
     value = env_get(name)
     if not value:
