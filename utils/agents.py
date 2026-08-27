@@ -28,6 +28,28 @@ MAX_TOOL_ROUNDS = 8
 MAX_REVIEW_LOOPS = 2
 
 
+def _build_tool_catalog() -> str:
+    """Planner/Reviewer yetenek bilgisini kayıtlı tool şemalarından üretir."""
+    catalog = []
+    for registered_tool in tools:
+        schema_model = registered_tool.args_schema
+        if hasattr(schema_model, "model_json_schema"):
+            parameters = schema_model.model_json_schema()
+        else:
+            parameters = schema_model.schema()
+        catalog.append(
+            {
+                "name": registered_tool.name,
+                "description": registered_tool.description,
+                "parameters": parameters,
+            }
+        )
+    return json.dumps(catalog, ensure_ascii=False)
+
+
+TOOL_CATALOG = _build_tool_catalog()
+
+
 class PlanStep(BaseModel):
     step: int
     tool: str
@@ -80,6 +102,7 @@ def planner_node(state: AgentState):
     """Temiz sohbet context'iyle plan üretir; tool izi kalıcı hafızaya sızmaz."""
     prompt = build_planner_system_prompt(
         _target_video(state),
+        tool_catalog=TOOL_CATALOG,
         previous_plan=state.get("plan", ""),
         feedback=state.get("feedback", ""),
     )
@@ -131,7 +154,11 @@ def tool_limit_node(state: AgentState):
 
 
 def reviewer_node(state: AgentState):
-    prompt = build_reviewer_system_prompt(state["user_query"], state.get("plan", ""))
+    prompt = build_reviewer_system_prompt(
+        state["user_query"],
+        state.get("plan", ""),
+        tool_catalog=TOOL_CATALOG,
+    )
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
     result = llm.with_structured_output(ReviewResult).invoke(messages)
     loops = int(state.get("review_loops") or 0)

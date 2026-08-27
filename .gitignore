@@ -1,12 +1,41 @@
+# Secrets and local configuration
 .env
-.venv
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Models and generated data
 *.pt
+*.pth
 *.pickle
+*.onnx
+*.plan
+extracted_anomaly_features/
+extracted_normal_features/
+_stuff/
+
+# Generated videos
 *.mp4
 *.mkv
+
+# Local demo artifacts
 *demo*
-*.ipynb
-extracted_anomaly_features
-extracted_normal_features
-*test*
-_stuff/

@@ -125,7 +125,7 @@ class Video_Analyzer(torch.nn.Module):
 
         def _generator(video_reader):
             try:
-                for end_idx in range(clip_size, total_frames, stride):
+                for end_idx in range(clip_size, total_frames + 1, stride):
                     start_idx = end_idx - clip_size
 
                     clip_indices = frame_indices[start_idx:end_idx]
@@ -234,6 +234,12 @@ class Video_Analyzer(torch.nn.Module):
             raise e
         finally:
             pbar.close()
+
+        if not scores:
+            raise RuntimeError(
+                "Video için analiz edilebilir bir klip üretilemedi. "
+                "Video uzunluğu ile clip_size, stride ve fps ayarlarını kontrol edin."
+            )
 
         return self.create_clips(
                     torch.concat(scores, dim=0), 

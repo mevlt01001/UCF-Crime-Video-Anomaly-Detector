@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import gc
 import json
+import math
 import subprocess
 import cv2
 import torch
@@ -39,6 +40,40 @@ VLM_SOURCE_SAMPLE_FPS = env_float("VLM_SOURCE_SAMPLE_FPS", 5.0)
 DEVICE = pick_device()
 _ROOT = Path(__file__).resolve().parents[1]
 _anomaly_segment_model: Optional[Video_Analyzer] = None
+
+
+class ToolInputError(ValueError):
+    def __init__(self, code: str, message: str, data: Optional[dict] = None):
+        super().__init__(message)
+        self.code = code
+        self.data = data or {}
+
+
+def _tool_result(
+    *,
+    ok: bool,
+    data: Optional[dict] = None,
+    warnings: Optional[list[dict]] = None,
+    error: Optional[dict] = None,
+) -> str:
+    """Bütün agent tool sonuçlarını tek JSON sözleşmesine dönüştürür."""
+    return json.dumps(
+        {
+            "ok": ok,
+            "data": data or {},
+            "warnings": warnings or [],
+            "error": error,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _tool_error(code: str, message: str, data: Optional[dict] = None) -> str:
+    return _tool_result(
+        ok=False,
+        data=data,
+        error={"code": code, "message": message},
+    )
 
 
 def _resolve_checkpoint() -> Optional[str]:
@@ -84,7 +119,6 @@ def get_anomaly_segment_model() -> Video_Analyzer:
 
 
 
-FILE_NOT_FOUND_ERROR = lambda f: f"Beliritlen {f} dosyası bulunamadı"
 VIDEO_TOO_SHORT_ERROR = lambda vp, ms, vs : f"Belirtilen {vp} dosyası video analiz segmentasyonu gerçekleştirebilemk için çok kısa! Lütfen {ms} saniyeden daha fazla olan video ile deneyin. Sizin videonuz {vs} saniye yalnızca."
 
 video_cache: dict[str, VideoReader] = {}
@@ -95,6 +129,54 @@ def get_vr(video_path: str) -> VideoReader:
     if video_path not in video_cache:
         video_cache[video_path] = VideoReader(video_path, ctx=cpu(0))
     return video_cache[video_path]
+
+
+def _get_video_metadata(video_path: str) -> dict:
+    """Tool'ların aynı süre/FPS bilgisini kullanmasını sağlar."""
+    vr = get_vr(video_path)
+    total_frames = len(vr)
+    fps = float(vr.get_avg_fps() or 0.0)
+    if total_frames <= 0 or not math.isfinite(fps) or fps <= 0:
+        raise ToolInputError(
+            "INVALID_VIDEO",
+            "Video süresi hesaplanamadı: geçerli frame veya FPS bilgisi yok.",
+        )
+    shape = vr[0].shape
+    return {
+        "duration_sec": total_frames / fps,
+        "fps": fps,
+        "frame_count": total_frames,
+        "width": int(shape[1]),
+        "height": int(shape[0]),
+    }
+
+
+def _validate_video_range(video_path: str, start_sec: float, end_sec: float) -> tuple[float, float, dict, bool]:
+    """Aralığı doğrular; yalnızca video sonunu aşan end_sec değerini kırpar."""
+    start = float(start_sec)
+    end = float(end_sec)
+    if not math.isfinite(start) or not math.isfinite(end):
+        raise ToolInputError("INVALID_TIME_RANGE", "start_sec ve end_sec sonlu sayılar olmalıdır.")
+    if start < 0:
+        raise ToolInputError("INVALID_TIME_RANGE", "start_sec negatif olamaz.")
+    if end <= start:
+        raise ToolInputError(
+            "INVALID_TIME_RANGE",
+            "end_sec, start_sec değerinden büyük olmalıdır.",
+        )
+
+    metadata = _get_video_metadata(video_path)
+    duration = float(metadata["duration_sec"])
+    if start >= duration:
+        raise ToolInputError(
+            "TIME_OUT_OF_RANGE",
+            f"İstenen başlangıç ({start:.2f}sn) video süresinin "
+            f"({duration:.2f}sn) dışındadır; bu zaman analiz edilemez.",
+            data={"video": metadata, "requested_range": {"start_sec": start, "end_sec": end}},
+        )
+
+    effective_end = min(end, duration)
+    return start, effective_end, metadata, effective_end != end
 
 def get_frame_id(video_path: str, number: int, unit: str) -> int:
 
@@ -141,7 +223,7 @@ def create_clip_generator(
 
     def _generator(vr:VideoReader):
         try:
-            for end_idx in range(clip_size, total_frames, stride):
+            for end_idx in range(clip_size, total_frames + 1, stride):
                 start_idx = end_idx - clip_size
 
                 clip_indices = frame_indices[start_idx:end_idx]
@@ -157,15 +239,19 @@ def create_clip_generator(
 
 @tool
 def run_abnormal_event_segmenter(video_path: str) -> str:
-    """
-    Bu araç, belirtilen videoyu yapay zeka anomali tespit modelinden geçirir.
-    Kavga, kaza, hırsızlık, yangın veya anormal insan/araç hareketlerini tespit etmek için KESİNLİKLE bu aracı kullanın.
-    Çıktı olarak anormal anların zaman damgalarını (timestamp) ve ilgili video kesitlerinin yollarını döner.
+    """Videonun tamamını anomali segmentasyon modeliyle tarar.
+
+    Eşik üstündeki zaman aralıklarını ve skorlarını, kullanılan eşik ile video
+    metadata bilgisiyle birlikte döndürür. Olay türünü kesin sınıflandırmaz;
+    boş segment listesi yalnızca mevcut eşikte anomali bulunmadığını gösterir.
+    Sonuç ortak tool JSON zarfındadır.
     """
     if not video_path or not os.path.exists(video_path):
-        return FILE_NOT_FOUND_ERROR(video_path)
+        return _tool_error("FILE_NOT_FOUND", f"Video bulunamadı: {video_path}")
 
+    metadata = None
     try:
+        metadata = _get_video_metadata(video_path)
         model = get_anomaly_segment_model()
         save_dir = str(_ROOT / "_stuff" / "lab_runs")
         segments = model.analyze(
@@ -179,22 +265,35 @@ def run_abnormal_event_segmenter(video_path: str) -> str:
             save_clips=False,
             save_dir=save_dir,
         )
+        warnings = []
         if not segments:
-            return (
-                f"Analiz tamamlandı. {video_path} içinde eşik üstü anormal segment bulunamadı "
-                "(threshold=0.3). Video normal görünebilir veya skorlar eşiğin altında kalmış olabilir."
-            )
-        return json.dumps(
-            {
+            warnings.append({
+                "code": "NO_SEGMENTS_ABOVE_THRESHOLD",
+                "message": "Mevcut eşikte anormal segment bulunmadı; bu sonuç videonun kesin olarak normal olduğunu kanıtlamaz.",
+            })
+        return _tool_result(
+            ok=True,
+            data={
                 "video_path": video_path,
+                "video": metadata,
+                "analysis_scope": "full_video",
+                "threshold": 0.3,
                 "segment_count": len(segments),
                 "segments": segments,
             },
-            ensure_ascii=False,
+            warnings=warnings,
         )
+    except ToolInputError as e:
+        return _tool_error(e.code, str(e), data=e.data)
+    except FileNotFoundError as e:
+        return _tool_error("FILE_NOT_FOUND", str(e))
     except Exception as e:
         print(f"[segmenter hata] {type(e).__name__}: {e}")
-        return f"Got an error [{video_path}]: {type(e).__name__}: {e}"
+        return _tool_error(
+            "SEGMENTER_ERROR",
+            f"{type(e).__name__}: {e}",
+            data={"video_path": video_path, "video": metadata} if metadata else {"video_path": video_path},
+        )
 
 def parse_time_to_frame_id(number:int, unit:str, len_frames, fps) -> int:
     unit_map = {
@@ -210,20 +309,16 @@ def parse_time_to_frame_id(number:int, unit:str, len_frames, fps) -> int:
 
 @tool
 def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_sec: float) -> str:
-    """
-    Bu araç, Vision-Language Model (VLM) kullanarak videonun belirli bir zaman aralığındaki olayları anlamlandırır, 
-    görsel soru-cevap yapar, metin okur (OCR) veya iki sahneyi karşılaştırır.
-    
-    Parametreler:
-    - video_path: İncelenecek videonun yolu.
-    - query: VLM'e sorulacak soru (Örn: "Adam ne renk ceket giyiyor?", "Sandalyeden kalkan oldu mu?").
-    - start_sec: İncelemenin başlayacağı saniye (float). Başlangıç için 0.0 kullan.
-    - end_sec: İncelemenin biteceği saniye (float).
-    """
-    if start_sec >= end_sec:
-        return "Hata: start_sec, end_sec'den küçük olmalıdır."
+    """Videonun belirtilen zaman aralığını görsel-dil modeliyle inceler.
 
+    Görsel olay açıklama, sayma, karşılaştırma ve görüntüdeki metni okuma gibi
+    soruları yanıtlar. Başlangıç video dışında ise çağrı reddedilir; yalnız bitiş
+    taşıyorsa video sonuna kırpılır ve uyarı döner. Sonuç ortak tool JSON zarfındadır.
+    """
     try:
+        valid_start, valid_end, metadata, was_clamped = _validate_video_range(
+            video_path, start_sec, end_sec
+        )
         vlm = VLM_Manager(
             api_key=EVREN_API_KEY,
             base_url=EVREN_URL,
@@ -231,24 +326,22 @@ def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_se
         )
         frames, actual_start, actual_end = generate_frames(
             video_path=video_path,
-            start_sec=start_sec,
-            end_sec=end_sec,
+            start_sec=valid_start,
+            end_sec=valid_end,
             all_video=False,
             FPS=VLM_SOURCE_SAMPLE_FPS,
             max_frames=VLM_MAX_FRAMES
         )
         source_time_context = (
-            "ZAMAN REFERANSI (zorunlu): İncelediğin geçici klip, kaynak videonun "
+            "İncelenen geçici klip, kaynak videonun "
             f"{actual_start:.2f}–{actual_end:.2f} saniye aralığından örneklenmiştir. "
             f"Geçici klipte 0:00, kaynak videoda {actual_start:.2f}. saniyeye karşılık gelir. "
-            "Yanıtında zaman belirteceksen yalnızca kaynak video zamanını kullan; "
-            "geçici klibin 0:00, başlangıç veya ilk saniye ifadelerini kaynak videonun "
-            "başlangıcı gibi sunma.\n\n"
+            "Zaman belirten cevaplarda kaynak video zamanını kullan.\n\n"
             f"Kullanıcı sorusu: {query}"
         )
         # Kare zamanları FPS yuvarlaması nedeniyle birkaç salise kayabilir; geçici
         # MP4 süresini kullanıcının/segmenterin istediği gerçek aralığa sabitle.
-        source_duration = max(0.0, end_sec - start_sec)
+        source_duration = valid_end - valid_start
         response = vlm.run(
             text=source_time_context,
             frames=frames,
@@ -257,49 +350,70 @@ def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_se
         
         del frames
         gc.collect()
-        
-        return (
-            f"VLM Analiz Sonucu (kaynak video {actual_start:.2f}sn - "
-            f"{actual_end:.2f}sn aralığı için; geçici klip 0:00 = kaynak "
-            f"{actual_start:.2f}sn): {response}"
+
+        if "[VLM HATA]:" in response:
+            return _tool_error(
+                "VLM_SERVICE_ERROR",
+                response.split("[VLM HATA]:", 1)[1].strip(),
+                data={"video_path": video_path, "video": metadata},
+            )
+
+        warnings = []
+        if was_clamped:
+            warnings.append({
+                "code": "END_TIME_CLAMPED",
+                "message": "İstenen bitiş video süresini aştığı için aralık video sonunda sınırlandırıldı.",
+                "requested_end_sec": float(end_sec),
+                "effective_end_sec": valid_end,
+            })
+        return _tool_result(
+            ok=True,
+            data={
+                "video_path": video_path,
+                "video": metadata,
+                "requested_range": {"start_sec": float(start_sec), "end_sec": float(end_sec)},
+                "effective_range": {"start_sec": valid_start, "end_sec": valid_end},
+                "sampled_range": {"start_sec": actual_start, "end_sec": actual_end},
+                "vlm_response": response,
+            },
+            warnings=warnings,
         )
-        
+
+    except ToolInputError as e:
+        return _tool_error(e.code, str(e), data=e.data)
+    except FileNotFoundError as e:
+        return _tool_error("FILE_NOT_FOUND", str(e))
     except Exception as e:
-        return f"VLM analizi sırasında hata oluştu: {str(e)}"
+        return _tool_error("VLM_ERROR", f"{type(e).__name__}: {e}")
 
 @tool
 def save_video_segment(video_path: str, start_sec: float, end_sec: float, output_filename: str) -> str:
-    """
-    Bu araç, videonun belirli bir zaman aralığını (start_sec ile end_sec arası) kesip yeni bir video dosyası olarak kaydeder.
-    Kullanıcı "şu saniyeleri benim için kaydet" veya "şu anı kes" dediğinde KESİNLİKLE bu aracı kullanın.
-    
-    Parametreler:
-    - video_path: Orijinal videonun yolu.
-    - start_sec: Kesimin başlayacağı saniye (Örn: 2dk 13sn -> 133.0).
-    - end_sec: Kesimin biteceği saniye.
-    - output_filename: Kaydedilecek dosyanın adı (örn: "kesilmiş_olay.mp4").
+    """Kaynak videonun belirtilen zaman aralığını MP4 dosyası olarak kaydeder.
+
+    Çıktı adında uzantı yoksa `.mp4` ekler. Başlangıç video dışında ise çağrı
+    reddedilir; yalnız bitiş taşıyorsa video sonuna kırpılır. FFmpeg çalışması ve
+    oluşan videonun okunabilirliği doğrulanır. Sonuç ortak tool JSON zarfındadır.
     """
     if not video_path or not os.path.isfile(video_path):
-        return f"Video kesme işlemi başarısız: kaynak video bulunamadı: {video_path}"
-    if start_sec < 0:
-        return "Video kesme işlemi başarısız: start_sec negatif olamaz."
-    if end_sec <= start_sec:
-        return "Video kesme işlemi başarısız: end_sec, start_sec değerinden büyük olmalıdır."
+        return _tool_error("FILE_NOT_FOUND", f"Kaynak video bulunamadı: {video_path}")
     if not (output_filename or "").strip():
-        return "Video kesme işlemi başarısız: output_filename boş olamaz."
+        return _tool_error("INVALID_OUTPUT_PATH", "output_filename boş olamaz.")
 
     output_path = Path(output_filename.strip()).expanduser()
     if output_path.suffix.lower() != ".mp4":
         output_path = Path(f"{output_path}.mp4")
     if not output_path.parent.is_dir():
-        return f"Video kesme işlemi başarısız: çıktı klasörü bulunamadı: {output_path.parent}"
+        return _tool_error("INVALID_OUTPUT_PATH", f"Çıktı klasörü bulunamadı: {output_path.parent}")
 
     try:
+        valid_start, valid_end, metadata, was_clamped = _validate_video_range(
+            video_path, start_sec, end_sec
+        )
         command = [
             'ffmpeg', '-y', 
-            '-ss', str(start_sec), 
+            '-ss', str(valid_start),
             '-i', video_path, 
-            '-t', str(end_sec - start_sec), 
+            '-t', str(valid_end - valid_start),
             '-c:v', 'copy', '-c:a', 'copy',
             str(output_path),
         ]
@@ -313,9 +427,9 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
         )
 
         if not output_path.is_file():
-            return "Video kesme işlemi başarısız: FFmpeg tamamlandı ancak çıktı dosyası oluşmadı."
+            return _tool_error("INVALID_OUTPUT", "FFmpeg tamamlandı ancak çıktı dosyası oluşmadı.")
         if output_path.stat().st_size <= 0:
-            return "Video kesme işlemi başarısız: çıktı dosyası boş."
+            return _tool_error("INVALID_OUTPUT", "Çıktı dosyası boş.")
 
         cap = cv2.VideoCapture(str(output_path))
         try:
@@ -324,38 +438,58 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
         finally:
             cap.release()
         if not opened or not has_frame:
-            return "Video kesme işlemi başarısız: çıktı dosyası geçerli bir video olarak okunamadı."
+            return _tool_error("INVALID_OUTPUT", "Çıktı geçerli bir video olarak okunamadı.")
 
-        return (
-            f"Başarılı! Video {start_sec} - {end_sec} saniyeleri arası kesilip "
-            f"'{output_path}' adıyla kaydedildi."
+        warnings = []
+        if was_clamped:
+            warnings.append({
+                "code": "END_TIME_CLAMPED",
+                "message": "İstenen bitiş video süresini aştığı için video sonunda sınırlandırıldı.",
+                "requested_end_sec": float(end_sec),
+                "effective_end_sec": valid_end,
+            })
+        return _tool_result(
+            ok=True,
+            data={
+                "video_path": video_path,
+                "video": metadata,
+                "requested_range": {"start_sec": float(start_sec), "end_sec": float(end_sec)},
+                "saved_range": {"start_sec": valid_start, "end_sec": valid_end},
+                "output_path": str(output_path),
+                "output_size_bytes": output_path.stat().st_size,
+            },
+            warnings=warnings,
         )
+    except ToolInputError as e:
+        return _tool_error(e.code, str(e), data=e.data)
     except FileNotFoundError:
-        return "Video kesme işlemi başarısız: FFmpeg bulunamadı veya çalıştırılamadı."
+        return _tool_error("FFMPEG_NOT_FOUND", "FFmpeg bulunamadı veya çalıştırılamadı.")
     except subprocess.TimeoutExpired:
-        return "Video kesme işlemi başarısız: FFmpeg 300 saniye içinde tamamlanamadı."
+        return _tool_error("FFMPEG_TIMEOUT", "FFmpeg 300 saniye içinde tamamlanamadı.")
     except subprocess.CalledProcessError as e:
         detail = (e.stderr or e.stdout or "FFmpeg hata ayrıntısı döndürmedi.").strip()
         if len(detail) > 500:
             detail = detail[-500:]
-        return f"Video kesme işlemi başarısız: FFmpeg hata verdi: {detail}"
+        return _tool_error("FFMPEG_ERROR", detail)
     except Exception as e:
-        return f"Video kesme işlemi başarısız: {str(e)}"
+        return _tool_error("CLIP_EXPORT_ERROR", f"{type(e).__name__}: {e}")
 
 @tool
 def get_video_info(video_path: str) -> str:
-    """
-    Videonun toplam uzunluğunu (saniye), FPS değerini ve çözünürlüğünü döndürür.
-    Zaman hesaplamaları yapmadan önce videonun toplam süresini öğrenmek için kullanın.
+    """Yerel video dosyasının teknik metadata bilgisini okur.
+
+    Süre, FPS, toplam frame sayısı ve çözünürlük döndürür; görsel içeriği veya
+    anomalileri analiz etmez. Sonuç ortak tool JSON zarfındadır.
     """
     try:
-        vr = get_vr(video_path)
-        fps = vr.get_avg_fps()
-        total_seconds = len(vr) / fps
-        shape = vr[0].shape # (H, W, C)
-        return f"Video Bilgisi: Toplam {total_seconds:.2f} saniye, {fps:.2f} FPS, Çözünürlük: {shape[1]}x{shape[0]} (WxH)."
+        info = _get_video_metadata(video_path)
+        return _tool_result(ok=True, data={"video_path": video_path, "video": info})
+    except FileNotFoundError as e:
+        return _tool_error("FILE_NOT_FOUND", str(e))
+    except ToolInputError as e:
+        return _tool_error(e.code, str(e), data=e.data)
     except Exception as e:
-        return f"Video bilgisi alınamadı: {str(e)}"
+        return _tool_error("VIDEO_INFO_ERROR", f"{type(e).__name__}: {e}")
 
 tools = [
     run_abnormal_event_segmenter, 
