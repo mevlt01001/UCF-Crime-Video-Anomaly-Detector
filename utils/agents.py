@@ -4,7 +4,7 @@ import os
 from typing import Annotated, Literal, Sequence, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -64,9 +64,9 @@ class PlanResult(BaseModel):
 
 
 class ReviewResult(BaseModel):
-    is_complete: bool
+    is_complete: bool = Field(description="Son executor cevabı kullanıcıya sunulmaya uygun mu?")
     route_to: Literal["planner", "executor"] | None = None
-    feedback_or_answer: str
+    feedback: str = Field(description="Yalnız iç denetim gerekçesi veya düzeltme talebi; kullanıcı cevabı değildir.")
 
 
 class AgentState(TypedDict):
@@ -126,12 +126,23 @@ def executor_node(state: AgentState):
     return {"messages": [llm_with_tools.invoke(messages)], "feedback": ""}
 
 
-def _last_usable_text(state: AgentState) -> str:
-    for msg in reversed(_work(state)):
-        content = getattr(msg, "content", "") or ""
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-    return "İşlem tamamlanamadı; kullanılabilir bir sonuç üretilemedi."
+def _executor_answer(state: AgentState) -> str:
+    """Yalnız son, tool çağrısı içermeyen executor mesajı cevap adayıdır."""
+    messages = _work(state)
+    if not messages:
+        return ""
+    message = messages[-1]
+    if not isinstance(message, AIMessage) or message.tool_calls or message.invalid_tool_calls:
+        return ""
+    content = message.content
+    if isinstance(content, str):
+        return content.strip()
+    return "\n".join(
+        block if isinstance(block, str) else block["text"]
+        for block in content
+        if isinstance(block, str)
+        or (isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+    ).strip()
 
 
 def tools_node(state: AgentState):
@@ -163,23 +174,23 @@ def reviewer_node(state: AgentState):
     result = llm.with_structured_output(ReviewResult).invoke(messages)
     loops = int(state.get("review_loops") or 0)
 
-    if result.is_complete:
-        answer = (result.feedback_or_answer or "").strip() or _last_usable_text(state)
-        return {"final_answer": answer, "feedback": "", "review_route": "", "review_loops": loops}
+    answer = _executor_answer(state)
+    feedback = result.feedback.strip()
+    if result.is_complete and answer:
+        return {"final_answer": answer, "feedback": feedback, "review_route": "", "review_loops": loops}
 
-    # Son düzeltme hakkından sonra graph cevapsız bitmesin. Elde edilen en iyi
-    # executor çıktısını döndür; sonsuz reviewer döngüsüne girme.
+    # Onaylanmamış taslağı, tool verisini veya denetim notunu kullanıcıya sızdırma.
     if loops + 1 >= MAX_REVIEW_LOOPS:
         return {
-            "final_answer": _last_usable_text(state),
-            "feedback": "",
+            "final_answer": "İsteğiniz için doğrulanmış bir nihai yanıt hazırlayamadım. İşlem deneme sınırına ulaştığı için durduruldu; analiz tamamlanmış sayılmamalıdır.",
+            "feedback": feedback,
             "review_route": "",
             "review_loops": loops + 1,
         }
 
     return {
-        "feedback": result.feedback_or_answer,
-        "review_route": result.route_to or "executor",
+        "feedback": feedback or "Kullanıcıya yönelik, eldeki kanıtlarla desteklenen bir cevap hazırla.",
+        "review_route": "executor" if result.is_complete else (result.route_to or "executor"),
         "final_answer": "",
         "review_loops": loops + 1,
     }

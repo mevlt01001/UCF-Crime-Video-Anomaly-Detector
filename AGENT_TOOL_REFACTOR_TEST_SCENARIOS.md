@@ -45,7 +45,8 @@
 
 ## İncelemede doğrulanan açıklar (27 Ağustos 2026)
 
-- Reviewer sınırında reddedilmiş son cevap halen geri dönebiliyor.
+- Reviewer sınırında reddedilmiş son cevabın dönmesi giderildi. Cevap seçimi ve
+  döngü kontrollerinin güncel kabul senaryoları: [Agent cevap akışı](AGENT_RESPONSE_FLOW_TEST_SCENARIOS.md).
 - Eksik parametre/bilinmeyen tool hataları ve tool tur sınırı mesajı henüz ortak
   JSON sözleşmesini izlemiyor.
 - VLM servis hatası halen yanıt içindeki `[VLM HATA]:` metni aranarak ayırt ediliyor;

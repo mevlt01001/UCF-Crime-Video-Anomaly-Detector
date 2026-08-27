@@ -9,7 +9,9 @@ import cv2
 import torch
 import numpy as np
 
+from collections import OrderedDict
 from pathlib import Path
+from threading import Lock
 from dotenv import load_dotenv
 from langchain.tools import tool
 from decord import VideoReader, cpu
@@ -121,34 +123,59 @@ def get_anomaly_segment_model() -> Video_Analyzer:
 
 VIDEO_TOO_SHORT_ERROR = lambda vp, ms, vs : f"Belirtilen {vp} dosyası video analiz segmentasyonu gerçekleştirebilemk için çok kısa! Lütfen {ms} saniyeden daha fazla olan video ile deneyin. Sizin videonuz {vs} saniye yalnızca."
 
-video_cache: dict[str, VideoReader] = {}
+_METADATA_CACHE_LIMIT = 128
+_metadata_cache: OrderedDict[str, tuple[tuple, dict]] = OrderedDict()
+_metadata_cache_lock = Lock()
+# Sabit sayıda kilit: video sayısıyla büyümez; aynı dosyanın ilk okumasını korur.
+_metadata_read_locks = tuple(Lock() for _ in range(32))
 
-def get_vr(video_path: str) -> VideoReader:
-    if not os.path.exists(video_path):
-        raise FileNotFoundError(f"Video bulunamadı: {video_path}")
-    if video_path not in video_cache:
-        video_cache[video_path] = VideoReader(video_path, ctx=cpu(0))
-    return video_cache[video_path]
+
+def _video_file_signature(video_path: str) -> tuple:
+    stat = os.stat(video_path)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 def _get_video_metadata(video_path: str) -> dict:
-    """Tool'ların aynı süre/FPS bilgisini kullanmasını sağlar."""
-    vr = get_vr(video_path)
-    total_frames = len(vr)
-    fps = float(vr.get_avg_fps() or 0.0)
-    if total_frames <= 0 or not math.isfinite(fps) or fps <= 0:
-        raise ToolInputError(
-            "INVALID_VIDEO",
-            "Video süresi hesaplanamadı: geçerli frame veya FPS bilgisi yok.",
-        )
-    shape = vr[0].shape
-    return {
-        "duration_sec": total_frames / fps,
-        "fps": fps,
-        "frame_count": total_frames,
-        "width": int(shape[1]),
-        "height": int(shape[0]),
-    }
+    """Yalnız metadata'yı önbellekler; canlı Decord okuyucusu paylaşılmaz."""
+    path = os.path.realpath(video_path)
+    with _metadata_read_locks[hash(path) % len(_metadata_read_locks)]:
+        signature = _video_file_signature(path)
+        with _metadata_cache_lock:
+            cached = _metadata_cache.get(path)
+            if cached is not None:
+                if cached[0] == signature:
+                    _metadata_cache.move_to_end(path)
+                    return dict(cached[1])
+                del _metadata_cache[path]
+
+        vr = VideoReader(path, ctx=cpu(0))
+        try:
+            total_frames = len(vr)
+            fps = float(vr.get_avg_fps() or 0.0)
+            if total_frames <= 0 or not math.isfinite(fps) or fps <= 0:
+                raise ToolInputError(
+                    "INVALID_VIDEO",
+                    "Video süresi hesaplanamadı: geçerli frame veya FPS bilgisi yok.",
+                )
+            shape = vr[0].shape
+            metadata = {
+                "duration_sec": total_frames / fps,
+                "fps": fps,
+                "frame_count": total_frames,
+                "width": int(shape[1]),
+                "height": int(shape[0]),
+            }
+        finally:
+            del vr
+
+        if _video_file_signature(path) != signature:
+            raise ToolInputError("VIDEO_CHANGED", "Video okunurken dosya değişti; isteği tekrar deneyin.")
+        with _metadata_cache_lock:
+            _metadata_cache[path] = (signature, metadata)
+            _metadata_cache.move_to_end(path)
+            while len(_metadata_cache) > _METADATA_CACHE_LIMIT:
+                _metadata_cache.popitem(last=False)
+        return dict(metadata)
 
 
 def _validate_video_range(video_path: str, start_sec: float, end_sec: float) -> tuple[float, float, dict, bool]:
