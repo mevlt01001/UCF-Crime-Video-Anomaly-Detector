@@ -2,6 +2,7 @@
 import os
 import json
 import time
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -325,6 +326,53 @@ def clear_agent():
     return [], "", [], "Sohbet sıfırlandı."
 
 
+def run_video_report(video):
+    """Sohbet state'ine dokunmadan aynı graph ile tek seferlik rapor üretir."""
+    yield None, None, "Analiz başlatılıyor…", ""
+    path = _path(video)
+    if not path or not os.path.isfile(path):
+        yield None, None, "Önce geçerli bir video yükleyin.", ""
+        return
+    trace = []
+    report = None
+    final_answer = ""
+    started = time.perf_counter()
+    try:
+        from langchain_core.messages import HumanMessage
+        from utils.agents import video_agent_app
+        from utils.reporting import REPORT_TASK
+        state = {
+            "output_mode": "report", "report": None,
+            "user_query": REPORT_TASK, "video_path": path, "video_paths": [path],
+            "image_paths": [], "conversation_messages": [HumanMessage(content=REPORT_TASK)],
+            "messages": [], "plan": "", "feedback": "", "review_route": "",
+            "final_answer": "", "tool_rounds": 0, "review_loops": 0,
+        }
+        for event in video_agent_app.stream(state, {"recursion_limit": 40}):
+            for node, update in event.items():
+                details = update.get("feedback") or update.get("plan") or ""
+                for message in update.get("messages") or []:
+                    details += "\n" + (_tool_calls_line(message) or _content_preview(message, 800))
+                trace.append(f"[{node}] {details}")
+                if update.get("report") is not None:
+                    report = update["report"]
+                if update.get("final_answer"):
+                    final_answer = update["final_answer"]
+            yield None, None, "Analiz ve denetim sürüyor…", "\n\n".join(trace)
+        elapsed = time.perf_counter() - started
+        if report is None:
+            yield None, None, final_answer or "Doğrulanmış rapor üretilemedi.", "\n\n".join(trace)
+            return
+        folder = ROOT / "_stuff" / "lab_runs" / "reports"
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", prefix="olay_raporu_", dir=folder, delete=False) as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2, allow_nan=False)
+            download = handle.name
+        yield report, download, f"Rapor hazır. Süre: {elapsed:.1f} sn", "\n\n".join(trace)
+    except Exception as exc:
+        yield None, None, f"Rapor üretilemedi: {type(exc).__name__}: {exc}", "\n\n".join(trace)
+
+
 with gr.Blocks(title="lab") as demo:
     gr.Markdown("Yerel test. Key `.env` içinde. Çıktı: `_stuff/lab_runs/`")
     with gr.Tab("LLM"):
@@ -393,6 +441,18 @@ with gr.Blocks(title="lab") as demo:
             clear_agent,
             outputs=[agent_chat, agent_msg, agent_lc, agent_trace],
         )
+
+    with gr.Tab("Video Raporu"):
+        gr.Markdown("Anormal aralıkları analiz eder ve denetlenmiş JSON raporu üretir. Sohbetten bağımsızdır. Eylemler şimdilik boş listedir.")
+        report_video = gr.Video(label="raporlanacak video")
+        report_button = gr.Button("Rapor oluştur", variant="primary")
+        report_status = gr.Textbox(label="durum", interactive=False)
+        report_json = gr.JSON(label="olay raporu")
+        report_file = gr.File(label="JSON indir", interactive=False)
+        report_trace = gr.Textbox(label="rapor işlem izi", lines=10, interactive=False)
+        report_outputs = [report_json, report_file, report_status, report_trace]
+        report_event = report_button.click(run_video_report, [report_video], report_outputs, concurrency_limit=1)
+        report_video.input(lambda: (None, None, "Video değişti; raporu yeniden oluşturun.", ""), outputs=report_outputs, cancels=[report_event], queue=False)
 
 if __name__ == "__main__":
     demo.queue()

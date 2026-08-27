@@ -1,0 +1,11 @@
+# Optional local object detection/tracking. Install after requirements.txt.
+# 8.4.131 excludes the project's NumPy 2.0.2; use the validated YOLO11 version.
+ultralytics==8.3.225
+lap==0.5.12
+# Timestamp-preserving annotated-video encoding (loaded only for rendering).
+av==16.0.1
+# Preserve the base environment when resolving the optional dependencies.
+numpy==2.0.2
+opencv-python==4.13.0.92
+torch==2.8.0
+torchvision==0.23.0

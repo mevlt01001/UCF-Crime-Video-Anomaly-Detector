@@ -64,7 +64,7 @@ which python
 
 ### 2. FFmpeg
 
-FFmpeg yalnızca video kesitini kalıcı MP4 dosyası olarak kaydeden `save_video_segment` aracı için gereklidir. Python paketi olmadığı için `requirements.txt` ile kurulmaz.
+FFmpeg, `save_video_segment` ve nesne takibindeki kutulu MP4 çıktısı için gereklidir. Yalnız nesne tespiti için gerekli değildir. Python paketi olmadığı için `requirements.txt` ile kurulmaz.
 
 macOS:
 
@@ -156,6 +156,32 @@ Videoyu doğrudan anomali modelinden geçirir; zaman aralıklarını ve skor gra
 
 Kullanıcı isteğini planlar, gerekli araçları çalıştırır ve sonucu Reviewer ile kontrol eder.
 
+### Video Raporu
+
+Video yükleyip **Rapor oluştur** ile aynı planner/executor/tools/reviewer akışını
+sohbet geçmişinden bağımsız çalıştırır. Onaylanan JSON ekranda gösterilir ve
+indirilebilir; bu sekmede takip mesajı yoktur. Normal Agent sohbeti değişmez.
+
+Alanlar: `ozet`, `olaylar` (`saniye`, `aciklama`), `risk_seviyesi`
+(`dusuk`, `orta`, `yuksek`), `eylemler` (şimdilik daima `[]`). Risk, modelin
+görsel bulgulara dayalı değerlendirmesidir; anomali skoru veya güvenlik garantisi
+değildir. İncelenen kapsam ve belirsizlikler özette belirtilir.
+
+Şema/zaman/kapsam doğrulaması veya reviewer onayı başarısızsa rapor indirmeye
+sunulmaz. Dosyalar `_stuff/lab_runs/reports/` altında benzersiz adlarla saklanır;
+otomatik dosya temizliği yoktur. Video değiştiğinde ekrandaki önceki sonuç temizlenir.
+
+Modelin eklediği tek bir JSON kod bloğu veya baştaki `json` etiketi doğrulama öncesi
+ayıklanır. Kod bloğunun çevresindeki açıklamalar nihai rapora eklenmez; onaylanan
+nesne saf JSON olarak sunulur. Yarım JSON veya birden fazla olası rapor kabul edilmez;
+şema, zaman, görsel kapsam ve reviewer kontrolleri korunur.
+
+Rapor regresyon testleri (API çağrısı ve video analizi yapmaz):
+
+```bash
+python -B -m unittest discover -s tests -p 'test_reporting.py' -v
+```
+
 ## Agent araçları
 
 | Araç | Görev |
@@ -164,6 +190,7 @@ Kullanıcı isteğini planlar, gerekli araçları çalıştırır ve sonucu Revi
 | `analyze_video_with_vlm` | Belirli zaman aralığını VLM ile açıklar. |
 | `save_video_segment` | Belirtilen aralığı FFmpeg ile MP4 olarak kaydeder. |
 | `get_video_info` | Video süresi, FPS ve çözünürlük bilgisini döndürür. |
+| `detect_and_track_objects` | Nesneleri ve görünme aralıklarını bulur; isteğe bağlı takip kutulu MP4 üretir. |
 
 Tool sonuçları ortak bir JSON zarfı kullanır:
 
@@ -181,6 +208,93 @@ kataloğu kayıtlı toollardan otomatik üretir; system prompt içinde ayrı bir
 listesi tutulmaz.
 
 Genel bir video analizi isteğinde varsayılan akış önce anomalileri bulmak, ardından bulunan segmentleri VLM ile açıklamaktır. Kullanıcı doğrudan bir zaman aralığı sorarsa segmenter çalıştırılmadan VLM kullanılabilir.
+
+## Nesne tespiti ve takip (isteğe bağlı kurulum)
+
+Hazır **YOLO11s + ByteTrack** kullanılır; eğitim gerekmez. Mevcut anomali,
+VLM, sohbet ve rapor akışı korunur. Plaka OCR ve kategorili arşiv henüz bu
+özelliğin parçası değildir; rapordaki `eylemler` şimdilik boş kalır.
+
+Önce temel kurulumu, ardından aşağıdakileri çalıştırın (proje kökünde):
+
+```bash
+python -m pip install -r requirements-objects.txt
+mkdir -p _stuff/models
+curl -fL https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt -o _stuff/models/yolo11s.pt
+```
+
+Windows PowerShell'de klasör için `New-Item -ItemType Directory -Force _stuff/models`,
+indirme için `curl.exe` kullanın. Mevcut bir ağırlık varsa yeniden indirmek gerekmez.
+Model yalnız yerel dosyadan yüklenir; tool çalışırken otomatik paket kurulmaz,
+model indirilmez veya video bir servise gönderilmez. Eksik bağımlılık/ağırlık
+yalnız bu toolu etkiler. Temel paket sürümleri değiştirilmez.
+Kutulu video için PyAV da isteğe bağlı paket listesine dahildir; yeni tool bu
+paketi çizim/kodlama aşamasında kullanır. Önceden kurulum yaptıysanız `requirements-objects.txt`
+kurulumunu tekrar çalıştırın.
+
+Ultralytics 8.3.225, projenin NumPy 2.0.2 sürümüyle çözümleme kontrolünden
+geçtiği için sabitlenmiştir; 8.4.131 bu NumPy sürümünü dışlar.
+YOLO11 kod/ağırlıkları AGPL-3.0 / Enterprise koşullarına tabidir;
+projenin MIT lisansı bu bağımlılıkların lisansını değiştirmez.
+[Resmî model ve lisans bilgisi](https://docs.ultralytics.com/models/yolo11/).
+
+Örnek sohbet istekleri:
+
+- “10–20 saniye arasında arabaların göründüğü aralıkları bul.”
+- “Bu kesitteki kişileri takip et, kutulu video oluştur.”
+- “Arabaların bulunduğu aralığı ayrı klip olarak kaydet.” (Tespit + mevcut kaydetme toolu.)
+
+Sınıf filtresi COCO'nun İngilizce sınıf adlarıdır (`person`, `car`, `truck` vb.).
+Boş liste geçersizdir; filtre verilmezse tüm sınıflar incelenir. Silah/plaka,
+renk veya kişi kimliği bu hazır modelin sınıfı değildir. Desteklenmeyen sınıf
+istenirse modelin desteklediği liste döner. Agent bunları tool açıklamasından öğrenir.
+
+Çıktılar `_stuff/lab_runs/actions/objects/` altındadır:
+
+- `frames.json`: kaynak kare indeksi/saniyesi, orijinal görüntü piksel koordinatları
+  (`xyxy`), sınıf, güven ve takip ID'si (henüz atanmadıysa `null`).
+- `intervals.json`: sınıf veya takip ID'si için kesintisiz görünme aralıkları.
+  Bitiş hariçtir; tespitin kaybolduğu boşluklar birleştirilmez.
+- `annotated.mp4`: yalnız istendiğinde; kutulu video, varsa kaynak ses korunur.
+- `manifest.json`: ayarlar, çıktı özeti ve dosya bütünlük bilgisi.
+
+Tool sınıf aralıklarına öncelik vererek en çok 100 aralığı döndürür; daha fazlası varsa `intervals_truncated=true`
+ve uyarı verir. Tüm aralıklar dosyada kalır; kesilmiş özet tam liste gibi
+sunulmamalıdır. Kutu hareketi kare kare güncellenir; takip ID'si gerçek kimlik
+değildir ve örtüşmede değişebilir. Tespit olmaması kesin yokluk kanıtı değildir.
+`detection_count` karelerdeki toplam kutu sayısıdır, tekil kişi/araç sayısı değildir.
+
+Her kare, kaynak zaman damgasıyla işlenir. Başlangıç/bitişe uyan ilk/son
+kare `sampled_range` içinde raporlanır. Değişken FPS videonun kutulu kopyası
+PyAV ile her karenin kendi zaman damgası ve gösterim süresi korunarak yazılır;
+FFmpeg bu görüntüyü yeniden kodlamadan varsa kaynak sesi ekler. Çıktının 0. saniyesi
+`sampled_range.start_sec` değerine karşılık gelir. Her kare zamanı (1 ms tolerans)
+ve son kare süresi doğrulanır; eski `VFR_NORMALIZED` yaklaşımı kullanılmaz.
+`output_timing="source_timestamps"`; `output_fps` ortalamadır, sabit FPS zorlaması değildir.
+
+`.env.example` ayarları: `OBJECT_DEVICE=auto` CUDA → MPS → CPU seçer;
+`cpu`, `cuda` veya `mps` ile açık seçim yapılabilir. Kullanılamayan açık seçim
+hata döner; sessiz cihaz değişimi yapılmaz. Varsayılan model girdisi 640,
+raporlanan tespit güven eşiği 0.25, kare başına en çok 100 tespit,
+iş başına en çok 18000 kare ve 900 saniye kontrol süresidir. Sınır aşılırsa
+aralık kısaltılmalı veya ayar değiştirilmeli; kareler sessizce atlanmaz.
+Süre sınırı kareler arasında ve FFmpeg'de uygulanır; tek bir yerel model/decoder
+çağrısını işletim sistemi seviyesinde kesen bir watchdog değildir.
+
+Model erişimi ve çıktı üretimi kilitlidir; eşzamanlı işler sıraya girer.
+Her iş ayrı okuyucu/takip durumu kullanır. Aynı kaynak dosya kimliği, ağırlık,
+ayar, sınıflar ve aralık için tespit ve çizim ayrı önbelleklenir. Önce tespit,
+sonra kutulu video istendiğinde YOLO yeniden çalışmaz (`detection_cache_hit=true`),
+yalnız çizim/kodlama yapılır. Kutulu video da hazırsa `cache_hit=true` olur.
+Yalnız MP4 bozulursa tespit korunur; `frames.json` bozulursa tespit yeniden yapılır.
+Çizim başarısız olsa bile sağlam tespit kaydı sonraki denemede kullanılabilir.
+Kaynaklara dokunulmaz; başarısız aşamanın geçici dosyaları temizlenir. Tamamlanmış
+çıktılar otomatik silinmez. Önceki cache sürümünün dosyaları silinmeden bırakılır,
+bu düzeltmeden sonraki ilk çağrıda bir kez yeniden analiz edilir.
+Başarısız model yükleme/cihaz aktarımı önceki sağlam model önbelleğini bozmaz.
+Bu aşamada arayüz değiştirilmez; dosya yolları tool sonucundadır.
+
+Manuel kabul senaryoları: [OBJECT_TRACKING_TEST_SCENARIOS.md](OBJECT_TRACKING_TEST_SCENARIOS.md).
 
 ## VLM zaman ve kare yönetimi
 

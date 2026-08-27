@@ -518,9 +518,74 @@ def get_video_info(video_path: str) -> str:
     except Exception as e:
         return _tool_error("VIDEO_INFO_ERROR", f"{type(e).__name__}: {e}")
 
+@tool
+def detect_and_track_objects(
+    video_path: str,
+    start_sec: float = 0.0,
+    end_sec: Optional[float] = None,
+    classes: Optional[list[str]] = None,
+    render_video: bool = False,
+) -> str:
+    """Videoda nesneleri YOLO11 ile bulur; ByteTrack ile video içi takip yapar.
+
+    Zamanlar kaynak videonun saniyeleridir. end_sec verilmezse video sonuna
+    kadar inceler; başlangıç dışarıdaysa hata, yalnız bitiş taşıyorsa kırpma
+    uyarısı döner. Her kare işlenir; uzun işler sınırı aşarsa daha kısa aralık
+    istenir, sessizce kare atlanmaz. classes=None tüm COCO sınıflarıdır;
+    filtre için İngilizce sınıf adları kullan: person, car, truck, bus, bicycle,
+    motorcycle, backpack, handbag, suitcase gibi. Boş veya desteklenmeyen
+    liste hata ve desteklenen sınıfları döndürür. Renk, kişi kimliği, silah,
+    plaka metni veya suç türü tespiti yapmaz; olay yorumu için VLM gerekir.
+
+    data.intervals içinde kind=class sınıfın, kind=track takip kimliğinin
+    görüldüğü kesintisiz aralıklardır; end_sec hariçtir. Görünmeyen aralar
+    birleştirilmez. Sınıfa göre klip isteniyorsa kind=class aralıklarını kullan.
+    detection_count karelerdeki toplam kutu sayısıdır, tekil nesne sayısı değildir.
+    Klip kaydetme için bu aralıklar save_video_segment'e
+    verilebilir. Sınıf aralıkları öncelikli en çok 100 aralık özettedir;
+    tamamı intervals_path dosyasında,
+    kare kutuları/güvenleri/kaynak zamanları details_path dosyasındadır.
+    Özet kesilmişse bütün sonuçları gördüğünü iddia etme; gerektiğinde daha
+    dar zaman aralıklarıyla incele.
+    track_id yalnız bu analize aittir; kaybolma/örtüşmede kimlik değişebilir.
+    Tespit edilememesi nesnenin kesinlikle bulunmadığı anlamına gelmez.
+
+    render_video=True nesneyi takip eden kutulu MP4 üretir (FFmpeg ve PyAV gerekir);
+    kaynak dosyayı değiştirmez. Çıktı yolu annotated_video_path içindedir.
+    Kaynak kare zamanları korunur. Aynı video/aralık/ayar için geçerli tespitler
+    çizimde yeniden kullanılır: detection_cache_hit=True tekrar YOLO çalışmadığını,
+    cache_hit=True istenen çıktının da hazırdan geldiğini belirtir.
+    Sonuç ortak {ok, data, warnings, error} JSON zarfındadır.
+    """
+    from utils.object_tracking import TrackingError, track_objects
+
+    try:
+        if not video_path or not os.path.isfile(video_path):
+            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        requested_end = end_sec
+        if end_sec is None:
+            end_sec = _get_video_metadata(video_path)["duration_sec"]
+        start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
+        data, warnings = track_objects(video_path, start, end, classes, render_video)
+        if clamped:
+            warnings.append({"code": "END_TIME_CLAMPED", "message": "Bitiş video sonunda sınırlandırıldı."})
+        return _tool_result(ok=True, data={
+            **data, "video_path": video_path, "video": metadata,
+            "requested_range": {"start_sec": start_sec, "end_sec": requested_end},
+            "effective_range": {"start_sec": start, "end_sec": end},
+        }, warnings=warnings)
+    except (ToolInputError, TrackingError) as exc:
+        return _tool_error(exc.code, str(exc), data=exc.data)
+    except ImportError as exc:
+        return _tool_error("OBJECT_DEPENDENCY_MISSING", f"Nesne tespiti bağımlılığı eksik: {exc}")
+    except Exception as exc:
+        return _tool_error("OBJECT_TRACKING_ERROR", f"{type(exc).__name__}: {exc}")
+
+
 tools = [
     run_abnormal_event_segmenter, 
     analyze_video_with_vlm, 
     save_video_segment, 
-    get_video_info
+    get_video_info,
+    detect_and_track_objects,
 ]

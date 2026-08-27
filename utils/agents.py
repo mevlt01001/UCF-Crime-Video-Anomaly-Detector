@@ -4,6 +4,10 @@ import os
 from typing import Annotated, Literal, Sequence, TypedDict
 
 from dotenv import load_dotenv
+
+load_dotenv()
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
@@ -12,8 +16,7 @@ from pydantic import BaseModel, Field
 
 from utils.prompts import build_executor_system_prompt, build_planner_system_prompt, build_reviewer_system_prompt
 from utils.tools import tools
-
-load_dotenv()
+from utils.reporting import report_instructions, validate_report
 
 llm = ChatOpenAI(
     model=os.environ.get("EVREN_LLM_MODEL", "llm-fast"),
@@ -70,6 +73,8 @@ class ReviewResult(BaseModel):
 
 
 class AgentState(TypedDict):
+    output_mode: Literal["chat", "report"]
+    report: dict | None
     user_query: str
     video_path: str
     video_paths: list[str]
@@ -107,6 +112,8 @@ def planner_node(state: AgentState):
         feedback=state.get("feedback", ""),
     )
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
+    if state.get("output_mode") == "report":
+        messages[0] = SystemMessage(content=prompt + report_instructions())
     result = llm.with_structured_output(PlanResult).invoke(messages)
     return {
         "plan": json.dumps(result.model_dump(), ensure_ascii=False),
@@ -123,6 +130,8 @@ def executor_node(state: AgentState):
         feedback=state.get("feedback", ""),
     )
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
+    if state.get("output_mode") == "report":
+        messages[0] = SystemMessage(content=prompt + "\nBu modda doğal dil nihai cevap yerine JSON raporu üret.\n" + report_instructions())
     return {"messages": [llm_with_tools.invoke(messages)], "feedback": ""}
 
 
@@ -170,14 +179,37 @@ def reviewer_node(state: AgentState):
         state.get("plan", ""),
         tool_catalog=TOOL_CATALOG,
     )
+    report = None
+    validation_error = ""
+    answer = _executor_answer(state)
+    if state.get("output_mode") == "report":
+        prompt += report_instructions() + "\nJSON raporunu, risk gerekçesini ve kanıt yeterliliğini denetle. Eksik/yetersiz analizi onaylama."
+        try:
+            report = validate_report(answer, _work(state), _target_video(state))
+            # Ham taslağı değil, doğrulanmış nesnenin JSON'unu ver.
+            answer = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+            prompt += (
+                "\nKodun şema, zaman ve kapsam doğrulaması başarılı. JSON dışındaki sunum "
+                "metni/kod çiti temizlendi; yalnız bu biçim farkı için yeniden analiz isteme. "
+                "Ham taslak ve tool kanıtları aşağıdaki mesajlarda korunuyor; içerik ve "
+                "risk gerekçesini denetlemeye devam et. Onaylanırsa kullanıcıya yalnız "
+                "şu JSON sunulacak:\n" + answer
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            validation_error = str(exc)
+            prompt += "\nKod doğrulaması başarısız: " + validation_error
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
     result = llm.with_structured_output(ReviewResult).invoke(messages)
     loops = int(state.get("review_loops") or 0)
 
-    answer = _executor_answer(state)
     feedback = result.feedback.strip()
-    if result.is_complete and answer:
-        return {"final_answer": answer, "feedback": feedback, "review_route": "", "review_loops": loops}
+    if validation_error:
+        feedback = "Rapor doğrulama hatası: " + validation_error + "\n" + feedback
+    if result.is_complete and answer and not validation_error:
+        output = {"final_answer": answer, "feedback": feedback, "review_route": "", "review_loops": loops}
+        if state.get("output_mode") == "report":
+            output["report"] = report
+        return output
 
     # Onaylanmamış taslağı, tool verisini veya denetim notunu kullanıcıya sızdırma.
     if loops + 1 >= MAX_REVIEW_LOOPS:
