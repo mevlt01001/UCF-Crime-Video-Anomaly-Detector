@@ -137,6 +137,68 @@ def _video_file_signature(video_path: str) -> tuple:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
+_CONVERTED_VIDEO_DIR = _ROOT / "_stuff" / "converted"
+_CONVERSION_CACHE_LIMIT = 128
+_conversion_cache: OrderedDict[str, str] = OrderedDict()
+_conversion_cache_lock = Lock()
+# Sabit sayıda kilit: video sayısıyla büyümez; aynı kaynağın eşzamanlı
+# dönüştürülmesini engeller (metadata okuyucusundaki kilitleme deseniyle aynı).
+_conversion_locks = tuple(Lock() for _ in range(32))
+
+
+def _ensure_mp4(video_path: str) -> str:
+    """video_path zaten .mp4 ise değiştirmeden döner; değilse ffmpeg ile mp4'e
+    dönüştürüp dönüştürülmüş dosyanın yolunu döner. Aynı kaynak için tekrar
+    dönüştürme yapılmaz, önbellekten döner. Kaynak bulunamazsa veya dönüştürme
+    başarısız olursa ToolInputError fırlatır; her tool'un mevcut
+    `except ToolInputError` bloğu bunu zaten yakalar.
+    """
+    if not video_path or not os.path.isfile(video_path):
+        raise ToolInputError("FILE_NOT_FOUND", f"Video bulunamadı: {video_path}")
+
+    source = os.path.realpath(video_path)
+    if Path(source).suffix.lower() == ".mp4":
+        return video_path
+
+    with _conversion_locks[hash(source) % len(_conversion_locks)]:
+        with _conversion_cache_lock:
+            cached = _conversion_cache.get(source)
+        if cached and Path(cached).is_file():
+            with _conversion_cache_lock:
+                _conversion_cache.move_to_end(source)
+            return cached
+
+        _CONVERTED_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = Path(source).suffix.lstrip(".") or "src"
+        converted_path = str(_CONVERTED_VIDEO_DIR / f"{Path(source).stem}_{suffix}.mp4")
+
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", source, "-c:v", "libx264", "-c:a", "aac", converted_path],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except FileNotFoundError:
+            raise ToolInputError("FFMPEG_NOT_FOUND", "FFmpeg bulunamadı veya çalıştırılamadı.")
+        except subprocess.TimeoutExpired:
+            raise ToolInputError("CONVERSION_TIMEOUT", "Video dönüştürme 300 saniyede tamamlanamadı.")
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "FFmpeg hata ayrıntısı döndürmedi.").strip()
+            raise ToolInputError("CONVERSION_FAILED", f"Video dönüştürme başarısız: {detail[-500:]}")
+
+        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size <= 0:
+            raise ToolInputError("CONVERSION_FAILED", "Dönüştürme tamamlandı ama çıktı dosyası oluşmadı/boş.")
+
+        with _conversion_cache_lock:
+            _conversion_cache[source] = converted_path
+            _conversion_cache.move_to_end(source)
+            while len(_conversion_cache) > _CONVERSION_CACHE_LIMIT:
+                _conversion_cache.popitem(last=False)
+        return converted_path
+
+
 def _get_video_metadata(video_path: str) -> dict:
     """Yalnız metadata'yı önbellekler; canlı Decord okuyucusu paylaşılmaz."""
     path = os.path.realpath(video_path)
@@ -275,11 +337,12 @@ def run_abnormal_event_segmenter(video_path: str) -> str:
     boş segment listesi yalnızca mevcut eşikte anomali bulunmadığını gösterir.
     Sonuç ortak tool JSON zarfındadır.
     """
-    if not video_path or not os.path.exists(video_path):
-        return _tool_error("FILE_NOT_FOUND", f"Video bulunamadı: {video_path}")
+    if not video_path:
+        return _tool_error("FILE_NOT_FOUND", "video_path boş olamaz.")
 
     metadata = None
     try:
+        video_path = _ensure_mp4(video_path)
         metadata = _get_video_metadata(video_path)
         model = get_anomaly_segment_model()
         save_dir = str(_ROOT / "_stuff" / "lab_runs")
@@ -345,6 +408,7 @@ def analyze_video_with_vlm(video_path: str, query: str, start_sec: float, end_se
     taşıyorsa video sonuna kırpılır ve uyarı döner. Sonuç ortak tool JSON zarfındadır.
     """
     try:
+        video_path = _ensure_mp4(video_path)
         valid_start, valid_end, metadata, was_clamped = _validate_video_range(
             video_path, start_sec, end_sec
         )
@@ -423,8 +487,8 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
     reddedilir; yalnız bitiş taşıyorsa video sonuna kırpılır. FFmpeg çalışması ve
     oluşan videonun okunabilirliği doğrulanır. Sonuç ortak tool JSON zarfındadır.
     """
-    if not video_path or not os.path.isfile(video_path):
-        return _tool_error("FILE_NOT_FOUND", f"Kaynak video bulunamadı: {video_path}")
+    if not video_path:
+        return _tool_error("FILE_NOT_FOUND", "video_path boş olamaz.")
     if not (output_filename or "").strip():
         return _tool_error("INVALID_OUTPUT_PATH", "output_filename boş olamaz.")
 
@@ -435,6 +499,7 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
         return _tool_error("INVALID_OUTPUT_PATH", f"Çıktı klasörü bulunamadı: {output_path.parent}")
 
     try:
+        video_path = _ensure_mp4(video_path)
         valid_start, valid_end, metadata, was_clamped = _validate_video_range(
             video_path, start_sec, end_sec
         )
@@ -484,6 +549,7 @@ def get_video_info(video_path: str) -> str:
     anomalileri analiz etmez. Sonuç ortak tool JSON zarfındadır.
     """
     try:
+        video_path = _ensure_mp4(video_path)
         info = _get_video_metadata(video_path)
         return _tool_result(ok=True, data={"video_path": video_path, "video": info})
     except FileNotFoundError as e:
@@ -535,8 +601,7 @@ def detect_and_track_objects(
     from utils.object_tracking import TrackingError, track_objects
 
     try:
-        if not video_path or not os.path.isfile(video_path):
-            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        video_path = _ensure_mp4(video_path)
         requested_end = end_sec
         if end_sec is None:
             end_sec = _get_video_metadata(video_path)["duration_sec"]
@@ -580,8 +645,7 @@ def detect_license_plate_regions(
     from utils.plate_detection import PlateError, extract_plate_crops
 
     try:
-        if not video_path or not os.path.isfile(video_path):
-            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        video_path = _ensure_mp4(video_path)
         start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
         data, warnings = extract_plate_crops(video_path, start, end)
         if clamped:
@@ -621,8 +685,7 @@ def archive_anomaly_clip(
     aktarılmaz. Bu bir arşivleme eylemidir; raporun kendisini üretmez.
     """
     try:
-        if not video_path or not os.path.isfile(video_path):
-            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        video_path = _ensure_mp4(video_path)
         start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
         data = archive_clip(video_path, start, end, category, explanation)
         warnings = []
