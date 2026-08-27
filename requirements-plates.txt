@@ -1,0 +1,3 @@
+# Optional local plate detection + OCR; no second OpenCV distribution.
+onnxruntime==1.23.2
+PyYAML==6.0.3

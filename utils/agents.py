@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from utils.prompts import build_executor_system_prompt, build_planner_system_prompt, build_reviewer_system_prompt
 from utils.tools import tools
 from utils.reporting import report_instructions, validate_report
+from utils.action_records import action_instructions
 
 llm = ChatOpenAI(
     model=os.environ.get("EVREN_LLM_MODEL", "llm-fast"),
@@ -131,7 +132,8 @@ def executor_node(state: AgentState):
     )
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
     if state.get("output_mode") == "report":
-        messages[0] = SystemMessage(content=prompt + "\nBu modda doğal dil nihai cevap yerine JSON raporu üret.\n" + report_instructions())
+        messages[0] = SystemMessage(content=prompt + "\nBu modda doğal dil nihai cevap yerine JSON raporu üret.\n"
+                                    + report_instructions() + action_instructions(_work(state), _target_video(state)))
     return {"messages": [llm_with_tools.invoke(messages)], "feedback": ""}
 
 

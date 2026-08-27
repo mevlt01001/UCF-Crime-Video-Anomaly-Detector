@@ -21,6 +21,8 @@ from utils.env import env_first, env_float, env_get, env_int
 from utils.video_analyzer_model import Video_Analyzer, pick_device
 from utils.video_process import generate_frames
 from utils.vlm import VLM_MAX_FRAMES, VLM_Manager
+from utils.video_export import VideoExportError, export_video
+from utils.clip_archive import ArchiveCategory, ArchiveError, archive_clip
 
 load_dotenv()
 
@@ -436,36 +438,7 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
         valid_start, valid_end, metadata, was_clamped = _validate_video_range(
             video_path, start_sec, end_sec
         )
-        command = [
-            'ffmpeg', '-y', 
-            '-ss', str(valid_start),
-            '-i', video_path, 
-            '-t', str(valid_end - valid_start),
-            '-c:v', 'copy', '-c:a', 'copy',
-            str(output_path),
-        ]
-
-        subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-
-        if not output_path.is_file():
-            return _tool_error("INVALID_OUTPUT", "FFmpeg tamamlandı ancak çıktı dosyası oluşmadı.")
-        if output_path.stat().st_size <= 0:
-            return _tool_error("INVALID_OUTPUT", "Çıktı dosyası boş.")
-
-        cap = cv2.VideoCapture(str(output_path))
-        try:
-            opened = cap.isOpened()
-            has_frame, _ = cap.read() if opened else (False, None)
-        finally:
-            cap.release()
-        if not opened or not has_frame:
-            return _tool_error("INVALID_OUTPUT", "Çıktı geçerli bir video olarak okunamadı.")
+        export_video(video_path, output_path, valid_start, valid_end)
 
         warnings = []
         if was_clamped:
@@ -487,6 +460,8 @@ def save_video_segment(video_path: str, start_sec: float, end_sec: float, output
             },
             warnings=warnings,
         )
+    except VideoExportError as e:
+        return _tool_error(e.code, str(e))
     except ToolInputError as e:
         return _tool_error(e.code, str(e), data=e.data)
     except FileNotFoundError:
@@ -582,10 +557,132 @@ def detect_and_track_objects(
         return _tool_error("OBJECT_TRACKING_ERROR", f"{type(exc).__name__}: {exc}")
 
 
+@tool
+def detect_license_plate_regions(
+    video_path: str,
+    start_sec: float,
+    end_sec: float,
+) -> str:
+    """Belirtilen video aralığında plaka adaylarını bulur ve PNG olarak kırpar.
+
+    Kaynak video saniyeleri kullanılır; her kare incelenir, end_sec hariçtir.
+    Tercihen ilgili kısa olay aralığını ver. Süre/kare/kırpım sınırı aşılırsa
+    hata döner; sessizce eksik analiz yapılmaz. Bitiş video sonuna kırpılabilir.
+    Plaka metnini OKUMAZ, araç/kişi kimliği veya takip yapmaz. Metin gerekirse
+    bu tool'un details_path çıktısı read_license_plate_crops aracına verilebilir.
+    Kırpımlar orijinal çözünürlükte plaka adaylarıdır; aynı plaka farklı
+    karelerde tekrar edebilir. crop_count tekil plaka sayısı değildir.
+    crops: kaynak saniyesi, frame_index, piksel bbox_xyxy (x2/y2 hariç),
+    confidence ve yerel crop_path içerir; ilk 30 gösterilir, tümü details_path
+    dosyasındadır. Tespit yokluğu plaka yokluğunu kanıtlamaz. Dosya dışarı
+    gönderilmez, kaynak değiştirilmez. Ortak tool JSON zarfını döndürür.
+    """
+    from utils.plate_detection import PlateError, extract_plate_crops
+
+    try:
+        if not video_path or not os.path.isfile(video_path):
+            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
+        data, warnings = extract_plate_crops(video_path, start, end)
+        if clamped:
+            warnings.append({"code": "END_TIME_CLAMPED", "message": "Bitiş video sonunda sınırlandırıldı."})
+        return _tool_result(ok=True, data={**data, "video": metadata,
+            "requested_range": {"start_sec": start_sec, "end_sec": end_sec}}, warnings=warnings)
+    except (ToolInputError, PlateError) as exc:
+        return _tool_error(exc.code, str(exc), data=exc.data)
+    except ImportError as exc:
+        return _tool_error("PLATE_DEPENDENCY_MISSING", f"requirements-plates.txt bağımlılığı eksik: {exc}")
+    except Exception as exc:
+        return _tool_error("PLATE_DETECTION_ERROR", f"{type(exc).__name__}: {exc}")
+
+
+@tool
+def archive_anomaly_clip(
+    video_path: str,
+    start_sec: float,
+    end_sec: float,
+    category: ArchiveCategory,
+    explanation: str,
+) -> str:
+    """İlgili olay kesitini seçilen kategori altında yerel arşive kaydeder.
+
+    Kategori görsel kanıta göre çağıran agent tarafından seçilir: hirsizlik,
+    soygun, kavga_saldiri, trafik_kazasi, is_kazasi, diger, belirsiz.
+    Olay türü biliniyor ama listede yoksa diger; türü anlaşılmıyorsa belirsiz.
+    Kendisi olay sınıflandırmaz; explanation kanıta dayalı kısa gerekçedir.
+    Tek kesit tek kategoriye kaydedilir; source video saniyeleri kullanılır.
+    Bitiş video sonuna kırpılabilir, geçersiz başlangıç reddedilir.
+    _stuff/lab_runs/actions/archive/<category>/ altında MP4 ve metadata JSON
+    oluşturur. FFmpeg yeniden kodlama yapar; genel save_video_segment aracından
+    farklı olarak keyframe öncesini taşımayan kesim hedeflenir, kare hassasiyetindedir.
+    Aynı kaynak/aralık/kategori yeniden istenirse geçerli mevcut klip kullanılır;
+    cache_hit=True, ilk gerekçe korunur. Bozuk/eski kaydın üzerine yazılmaz.
+    Çıktı yolları output_path/metadata_path'tir. Kaynak değiştirilmez, dışarıya
+    aktarılmaz. Bu bir arşivleme eylemidir; raporun kendisini üretmez.
+    """
+    try:
+        if not video_path or not os.path.isfile(video_path):
+            return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
+        start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
+        data = archive_clip(video_path, start, end, category, explanation)
+        warnings = []
+        if clamped:
+            warnings.append({"code": "END_TIME_CLAMPED", "message": "Bitiş video sonunda sınırlandırıldı."})
+        return _tool_result(ok=True, data={**data, "video": metadata,
+            "requested_range": {"start_sec": start_sec, "end_sec": end_sec}}, warnings=warnings)
+    except (ToolInputError, ArchiveError) as exc:
+        return _tool_error(exc.code, str(exc), data=exc.data)
+    except VideoExportError as exc:
+        return _tool_error(exc.code, str(exc))
+    except FileNotFoundError:
+        return _tool_error("FFMPEG_NOT_FOUND", "FFmpeg veya kaynak dosya bulunamadı.")
+    except subprocess.TimeoutExpired:
+        return _tool_error("FFMPEG_TIMEOUT", "FFmpeg 300 saniyede tamamlanamadı.")
+    except subprocess.CalledProcessError as exc:
+        return _tool_error("FFMPEG_ERROR", (exc.stderr or "FFmpeg başarısız.")[-500:])
+    except Exception as exc:
+        return _tool_error("ARCHIVE_ERROR", f"{type(exc).__name__}: {exc}")
+
+
+@tool
+def read_license_plate_crops(crops_manifest_path: str) -> str:
+    """Plaka tespitinin mevcut kırpımlarındaki yazıyı yerel OCR modeliyle okur.
+
+    crops_manifest_path: detect_license_plate_regions sonucundaki details_path
+    (crops.json). Videoyu yeniden taramaz, plaka tespitini tekrarlamaz. Özet
+    listedeki ilk 30 ile sınırlı değildir; kayıt dosyasındaki tüm kırpımları okur.
+    text yalnız status=read olduğunda doludur; uncertain/unreadable sonuçlarda
+    text=null, ham tahmin candidate_text içindedir ve kesin plaka diye sunulmaz.
+    min_slot_confidence karakter/sonlandırma yuvalarının en düşük model güvenidir;
+    doğruluk olasılığı değildir. Yüksek güvenli okumalar da gözle doğrulanmalıdır.
+    Kaynak saniyesi, koordinat, crop_path ve tespit güveni her okumada korunur.
+    Aynı plakanın farklı karelerdeki okumaları birleştirilmez; sayılar tekil araç
+    sayısı değildir. Sahip/kimlik sorgusu, ülke tahmini veya dışarı aktarım yapmaz.
+    İlk 30 sonuç özettedir, tümü yeni details_path JSON dosyasındadır. Eksik/bozuk
+    kırpım veya limit aşımında hata döner; kısmi sonuç başarı diye sunulmaz.
+    Sonuç ortak {ok, data, warnings, error} JSON zarfındadır.
+    """
+    from utils.plate_detection import PlateError
+    from utils.plate_ocr import read_plate_crops
+
+    try:
+        data, warnings = read_plate_crops(crops_manifest_path)
+        return _tool_result(ok=True, data=data, warnings=warnings)
+    except PlateError as exc:
+        return _tool_error(exc.code, str(exc), data=exc.data)
+    except ImportError as exc:
+        return _tool_error("OCR_DEPENDENCY_MISSING", f"requirements-plates.txt bağımlılığı eksik: {exc}")
+    except Exception as exc:
+        return _tool_error("PLATE_OCR_ERROR", f"{type(exc).__name__}: {exc}")
+
+
 tools = [
     run_abnormal_event_segmenter, 
     analyze_video_with_vlm, 
     save_video_segment, 
     get_video_info,
     detect_and_track_objects,
+    detect_license_plate_regions,
+    read_license_plate_crops,
+    archive_anomaly_clip,
 ]

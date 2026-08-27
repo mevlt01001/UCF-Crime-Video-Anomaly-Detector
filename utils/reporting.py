@@ -4,6 +4,7 @@ import math
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
+from utils.action_records import action_records
 
 
 class ReportEvent(BaseModel):
@@ -17,7 +18,7 @@ class VideoReport(BaseModel):
     ozet: str = Field(min_length=1)
     olaylar: list[ReportEvent]
     risk_seviyesi: Literal["dusuk", "orta", "yuksek"]
-    eylemler: list[str] = Field(max_length=0)
+    eylemler: list[str]
 
 
 REPORT_TASK = "Videodaki anormal aralıkları bul, bu aralıkları görsel olarak incele ve kanıta dayalı olay raporu oluştur."
@@ -38,7 +39,13 @@ Birden fazla olayda en yüksek kanıtla desteklenen risk seviyesini seç.
 Anomali bulunmaması tüm videonun güvenli olduğunu kanıtlamaz; kapsamı açıkla.
 Yetersiz görüntüyü veya başarısız analizi düşük risk diye sunma. Gerekli analiz
 tamamlanamıyorsa bunu belirt; tamamlanmış rapor uydurma.
-eylemler her zaman boş liste [] olmalıdır; henüz eylem önerisi üretilmiyor.
+Görsel bulgulara uygun ve yararlı yerel eylemleri araç kataloğundan seç;
+her aracı sırf mevcut diye çalıştırma. Kişi/araç kimliği veya dışa aktarım yapma.
+eylemler bir metin listesidir: gerçek kayıtlar [BASARILI] / [BASARISIZ],
+henüz uygulanmamış öneriler [ONERI] ile başlar. Kodun verdiği gerçek kayıtları
+aynen koru; gerçekleşmeyen işlemi yapılmış gibi yazma. Öneri geleceğe yöneliktir,
+kendisi işlem çalıştırmaz. Ek eylem yoksa boş liste geçerlidir. Eylem hatası,
+zorunlu görsel analiz tamamlandıysa tek başına raporu engellemez; hatayı açıkla.
 """
 
 
@@ -85,6 +92,17 @@ def validate_report(answer: str, messages, video_path: str) -> dict:
     report = VideoReport.model_validate_json(_unwrap_report_json(answer))
     if not report.ozet.strip() or any(not event.aciklama.strip() for event in report.olaylar):
         raise ValueError("Özet ve olay açıklamaları boş olamaz.")
+    expected_actions = action_records(messages, video_path)
+    actual_actions = []
+    for entry in report.eylemler:
+        if entry.startswith("[ONERI] ") and 0 < len(entry[8:].strip()) <= 2000:
+            continue
+        if entry.startswith(("[BASARILI] ", "[BASARISIZ] ")):
+            actual_actions.append(entry)
+        else:
+            raise ValueError("Eylem yalnız doğrulanmış kayıt veya [ONERI] açıklaması olabilir.")
+    if actual_actions != expected_actions:
+        raise ValueError("Başarı/başarısızlık eylemleri gerçek tool kayıtlarıyla birebir ve aynı sırada eşleşmeli.")
     segments = None
     duration = None
     ranges = []

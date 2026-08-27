@@ -375,6 +375,99 @@ utils/llm.py                   Metin LLM yöneticisi
 
 ## Bilinen sınırlar
 
+### Plaka bölgesi tespiti
+
+`detect_license_plate_regions(video_path, start_sec, end_sec)` ilgili aralıktaki
+her kareyi inceler ve plaka adaylarını **orijinal çözünürlükte PNG** olarak kaydeder.
+Agent bu aracı diğer araçlar gibi seçer; planner/executor/reviewer sırası değişmez.
+Raporun `eylemler` alanı bu aşamada hâlâ boş kalır. Yeni arayüz/galeri eklenmedi;
+tool sonucundaki yollar yerel dosyalardır.
+
+Kurulum (önce ana requirements kurulmuş olmalı):
+
+```bash
+python -m pip install -r requirements-plates.txt
+mkdir -p _stuff/models
+curl -fL --max-time 120 -o _stuff/models/yolo-v9-t-384-license-plates-end2end.onnx \
+  https://github.com/ankandrew/open-image-models/releases/download/assets/yolo-v9-t-384-license-plates-end2end.onnx
+```
+
+Hazır model: [Open Image Models YOLOv9-t 384 plaka dedektörü](https://github.com/ankandrew/open-image-models#plate-detection).
+RGB/letterbox giriş ve end2end kutu sözleşmesi bu projenin resmi ön/son işleme
+tanımına dayanır. OpenCV paket çakışmasını önlemek için `open-image-models`
+paketi yerine ONNX dosyası doğrudan ONNX Runtime ile çalıştırılır.
+Bu ilk sürüm **CPU** kullanır (Mac/Windows/Linux için ortak yol); MPS/CUDA
+hızlandırması eklenmedi. Yalnız macOS üzerinde çalıştırılarak doğrulandı.
+İlk kurulum dışında otomatik indirme veya dışarıya görüntü gönderimi yoktur.
+Üçüncü taraf model ağırlıklarının lisans/dağıtım koşulları ayrıca geçerlidir;
+projenin MIT lisansı bu ağırlıklara otomatik uygulanmaz.
+
+- Sonuç: ortak `{ok, data, warnings, error}` zarfı. `ocr_performed=false`.
+- `crops`: kaynak `source_sec`, `frame_index`, `bbox_xyxy`, güven skoru ve `crop_path`.
+  Koordinatlar kaynak piksel uzayındadır; sağ/alt sınır hariçtir.
+- `crop_count` tekil araç/plaka sayısı değildir; kareler arasında tekrar olabilir.
+  İlk 30 kayıt tool sonucunda, tüm kayıtlar `details_path` JSON dosyasında bulunur.
+- Çıktılar `_stuff/lab_runs/actions/plates/plates-*/` altında kalır; otomatik silinmez.
+  Başarısız işin yalnız kendi kısmi çıktıları temizlenir. Tekrar çağrı yeniden çalışır.
+- Varsayılanlar: güven `0.25`, en fazla `1800` kare, `500` kırpım, `300` saniye.
+  `.env.example` içindeki `PLATE_*` ayarlarıyla değiştirilebilir. Sınır aşımında
+  kısmi başarı yerine hata döner; kısa aralıkla yeniden denenmelidir.
+- Süre sınırı native çağrılar arasındadır; takılan native işlemi zorla kesen watchdog değildir.
+- Plaka bulunamaması, plakanın kesinlikle olmadığı anlamına gelmez. Küçük/bulanık
+  plaka kırpımı da okunabilirlik garantisi vermez; bu tool OCR veya takip yapmaz.
+- Manuel testler: [PLATE_DETECTION_TEST_SCENARIOS.md](PLATE_DETECTION_TEST_SCENARIOS.md).
+
+### Kırpılmış plakayı okuma (OCR)
+
+`read_license_plate_crops(crops_manifest_path)` yukarıdaki tespit tool'unun
+`details_path` değerini alır. **Videoyu/tespiti yeniden çalıştırmaz**; kayıtlı tüm
+kırpımları okur. Tespit özetinin ilk 30 kayıtla sınırlı olması OCR kapsamını daraltmaz.
+Sohbet, planner/executor/reviewer sırası ve rapor şeması değişmez; `eylemler=[]`
+henüz korunur. Kategorizasyon, takip tabanlı tekilleştirme ve dışa aktarım eklenmedi.
+
+Hazır [FastPlateOCR CCT XS v2 global modeli](https://github.com/ankandrew/fast-plate-ocr)
+kullanılır. Resmi yapılandırmaya göre RGB, 64×128, NHWC uint8 giriş ve
+10 karakterlik çıktı çözülür; normalizasyon modelin içindedir. Bölge/ülke başlığı
+bu aşamada kullanılmaz. Eğitim veya LLM çağrısı gerekmez. ONNX Runtime CPU kullanır.
+
+```bash
+python -m pip install -r requirements-plates.txt
+mkdir -p _stuff/models
+curl -fL --max-time 120 -o _stuff/models/cct_xs_v2_global.onnx \
+  https://github.com/ankandrew/fast-plate-ocr/releases/download/arg-plates/cct_xs_v2_global.onnx
+curl -fL --max-time 30 -o _stuff/models/cct_xs_v2_global_plate_config.yaml \
+  https://github.com/ankandrew/fast-plate-ocr/releases/download/arg-plates/cct_xs_v2_global_plate_config.yaml
+```
+
+Model/yapılandırma dosyaları birlikte kullanılmalıdır. Ağırlıkların kendi kullanım
+koşulları geçerlidir; depo MIT lisansı otomatik olarak ağırlıklara uygulanmaz.
+Python paketleri mevcut ortamda zaten varsa yeni paket kurulmaz; `fast-plate-ocr`
+paketi veya ikinci OpenCV dağıtımı kurulmaz. OCR yalnız kurulumda indirme yapar;
+çalışma sırasında görüntüler dışarı gönderilmez, dosyalar otomatik indirilmez.
+
+- Her sonuçta kaynak saniyesi, kare/kutu, tespit güveni ve kırpım yolu korunur.
+- `status=read`: `text` doludur; tüm 10 karakter/sonlandırma yuvasının güveni
+  `PLATE_OCR_MIN_CONFIDENCE` (varsayılan `0.8`) eşiğini geçmiştir.
+- `uncertain` veya `unreadable`: `text=null`; ham tahmin `candidate_text` içindedir.
+  Boş çıktı veya metin ortasında padding karakteri varsa `unreadable` döner.
+- `slot_confidences` ve `min_slot_confidence` model skorlarıdır, kalibre edilmiş
+  doğruluk olasılığı değildir. Yüksek güven de doğruluk garantisi vermez.
+  Plaka biçimi zorla düzeltilmez, `O/0` gibi belirsizlikler tahminen değiştirilmez.
+- Aynı plakanın farklı karelerdeki okumaları ayrı tutulur; `read_count` araç sayısı
+  değildir. Ülke, araç sahibi veya gerçek kişi kimliği sorgulanmaz.
+- Varsayılan sınırlar: 500 kırpım, 120 saniye (native çağrılar arasında kontrol).
+  Kısmi başarı yerine hata döner; daha kısa aralıkla yeniden tespit gerekebilir.
+- Yeni tespit kayıtlarına PNG SHA-256 eklenir; değişen kırpım reddedilir.
+  Eski hash'siz kayıtlar `LEGACY_CROPS_UNVERIFIED` uyarısıyla okunabilir.
+- Girdi yalnız tespit klasöründeki `crops.json` ve aynı klasördeki PNG'lerdir.
+  Kaynak video sonradan silinse de kayıtlı kırpımlar okunabilir.
+- Çıktı `_stuff/lab_runs/actions/plate_ocr/ocr-*/readings.json`; tool ilk 30 okumayı,
+  dosya tamamını içerir. Orijinal kırpımlar değiştirilmez. Tekrar çağrı yeniden OCR yapar.
+- Kırpım yoksa `ok=true`, `ocr_performed=false`, `NO_CROPS`; model yüklenmez.
+- Manuel testler: [PLATE_OCR_TEST_SCENARIOS.md](PLATE_OCR_TEST_SCENARIOS.md).
+
+### Diğer sınırlar
+
 - VLM servisinin kabul ettiği maksimum video/kare kapasitesi servis ortamında ayrıca doğrulanmalıdır.
 - FFmpeg `-c copy` kullandığı için kesim başlangıcı codec keyframe yapısına bağlı olarak küçük zaman farkları gösterebilir.
 - Anomali skoru olayın kesin türü veya hukuki niteliği değildir.
