@@ -22,7 +22,8 @@ Trace: `read_license_plate_crops`, önceki tespitin `details_path` değerini alm
 | Yanlış dosya yolu/başka klasörde PNG | `INVALID_CROP_MANIFEST`; rastgele yerel dosya OCR'a verilmez. |
 | Kırpım/süre sınırı | `OCR_CROP_LIMIT` / `OCR_TIMEOUT`; eksik sonuç başarılı raporlanmaz. |
 | Kaynak video silinmiş | PNG ve manifest sağlamsa OCR çalışır; videoyu tekrar istemez. |
-| Boş sohbet/normal rapor | Mevcut akış değişmez; raporun `eylemler` alanı bu aşamada hâlâ `[]`. |
+| Boş sohbet | Mevcut akış değişmez. |
+| Rapor modunda bu görevin tespiti + OCR | OCR kaydı yalnız bu görevin `details_path` manifesti kullanıldıysa `eylemler`e girer. Ayrı senaryolar: [REPORT_ACTIONS_TEST_SCENARIOS.md](REPORT_ACTIONS_TEST_SCENARIOS.md). |
 
 Bu testler OCR'ın tüm Türkiye plakalarında doğru olacağını kanıtlamaz; gerçek
 gece/gündüz, açı ve çözünürlük çeşitliliğiyle ayrıca doğruluk değerlendirmesi gerekir.

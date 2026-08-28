@@ -138,6 +138,52 @@ http://127.0.0.1:7860
 
 Port kullanımda ise eski Gradio sürecini kapatın veya farklı bir port yapılandırın.
 
+## Yeni arayüz (Gradio paralel)
+
+Gradio geçici olarak sistemde kalırken yeni Agent + Video Raporu arayüzü
+FastAPI + React ile paralel çalıştırılabilir.
+
+### 1) Web bağımlılıkları
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 2) Frontend build (opsiyonel ama önerilir)
+
+```bash
+cd frontend
+npm run build
+cd ..
+```
+
+### 3) Web sunucusunu başlatma
+
+```bash
+source .venv/bin/activate
+python run_web.py
+```
+
+Ardından:
+
+- Yeni arayüz: `http://127.0.0.1:8000/`
+- Gradio fallback: `http://127.0.0.1:8000/gradio`
+- API sağlık: `http://127.0.0.1:8000/api/health`
+
+Notlar:
+
+- Yeni arayüz yalnız Agent + Video Raporu akışına odaklıdır.
+- `utils/*` içindeki model ve tool mantığı ortaktır; yeni backend bunları yeniden yazmaz.
+- Canlı süreç görünümü `video_agent_app.stream(...)` event'lerinden beslenir.
+- Paralel doğrulama adımları: `docs/parallel_validation_checklist.md`
+
 ## Lab sekmeleri
 
 ### LLM

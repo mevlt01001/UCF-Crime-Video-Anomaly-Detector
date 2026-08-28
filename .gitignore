@@ -39,3 +39,7 @@ _stuff/
 
 # Local demo artifacts
 *demo*
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/

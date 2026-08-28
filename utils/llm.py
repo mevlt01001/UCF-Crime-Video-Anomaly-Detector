@@ -29,7 +29,7 @@ class LLM_Manager:
         if system_prompt:
             self.history.append(SystemMessage(content=system_prompt))
 
-    def run(self, query: str) -> str:
+    def run(self, query: str, *, raise_on_error: bool = False) -> str:
         self.history.append(HumanMessage(content=query))
 
         try:
@@ -38,6 +38,8 @@ class LLM_Manager:
             return response.content
         except Exception as e:
             self.history.pop()
+            if raise_on_error:
+                raise
             return f"[LLM HATA] Model çağrısı başarısız oldu: {str(e)}"
 
     def clear_history(self):

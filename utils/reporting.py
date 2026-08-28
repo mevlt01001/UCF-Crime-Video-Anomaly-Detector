@@ -44,8 +44,10 @@ her aracı sırf mevcut diye çalıştırma. Kişi/araç kimliği veya dışa ak
 eylemler bir metin listesidir: gerçek kayıtlar [BASARILI] / [BASARISIZ],
 henüz uygulanmamış öneriler [ONERI] ile başlar. Kodun verdiği gerçek kayıtları
 aynen koru; gerçekleşmeyen işlemi yapılmış gibi yazma. Öneri geleceğe yöneliktir,
-kendisi işlem çalıştırmaz. Ek eylem yoksa boş liste geçerlidir. Eylem hatası,
-zorunlu görsel analiz tamamlandıysa tek başına raporu engellemez; hatayı açıkla.
+kendisi işlem çalıştırmaz. Aynı hedef ve aynı aralık için başarıyla tamamlanmış işlemi
+yeniden önerme; farklı aralık veya başarısız işlem için öneri mümkündür. Ek eylem yoksa
+boş liste geçerlidir. Eylem hatası, zorunlu görsel analiz tamamlandıysa tek başına
+raporu engellemez; hatayı açıkla.
 """
 
 

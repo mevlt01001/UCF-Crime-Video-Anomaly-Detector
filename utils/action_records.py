@@ -81,9 +81,24 @@ def action_records(messages, video_path):
     return records
 
 
+def successful_action_tools(records):
+    """[BASARILI] satırlarındaki tool adlarını döndürür."""
+    names = set()
+    for entry in records:
+        if not entry.startswith("[BASARILI] "):
+            continue
+        rest = entry[len("[BASARILI] "):]
+        name = rest.split(" (", 1)[0].strip()
+        if name:
+            names.add(name)
+    return names
+
+
 def action_instructions(messages, video_path):
     records = action_records(messages, video_path)
     return ("\nBu görevin gerçek tool sonuçlarından üretilmiş eylem kayıtları:\n"
             + json.dumps(records, ensure_ascii=False)
             + "\nNihai eylemler listesine bu kayıtların tümünü aynen al. Ek kayıt yalnız "
-              "[ONERI] ile başlayan, henüz uygulanmamış bir öneri olabilir. Başarı/başarısızlık uydurma.")
+              "[ONERI] ile başlayan, henüz uygulanmamış bir öneri olabilir. "
+              "Aynı hedef/aralıkta [BASARILI] olan işlemi yeniden önerme (ör. o kesitin arşivi başarılıysa "
+              "'arşivlenmelidir' yazma). Başarı/başarısızlık uydurma.")

@@ -144,7 +144,10 @@ def _resolve_analyzer_checkpoint() -> Optional[str]:
     return None
 
 
-def run_analyzer(video, threshold):
+ANALYZER_THRESHOLD = 0.3
+
+
+def run_analyzer(video):
     path = _path(video)
     if not path:
         return "Video yok.", None
@@ -190,7 +193,7 @@ def run_analyzer(video, threshold):
             height=height,
             fps=fps,
             batch_size=batch,
-            threshold=float(threshold),
+            threshold=ANALYZER_THRESHOLD,
             save_graph=True,
             save_clips=False,
             save_dir=str(OUT_DIR),
@@ -206,6 +209,7 @@ def run_analyzer(video, threshold):
             "width": width,
             "height": height,
             "batch": batch,
+            "threshold": ANALYZER_THRESHOLD,
             "segments": segments,
         }
 
@@ -392,13 +396,13 @@ with gr.Blocks(title="lab") as demo:
     with gr.Tab("Analyzer"):
         gr.Markdown(
             "clip_size / overlap / fps / batch / çözünürlük `.env` (`AS_*`). "
+            f"Eşik sabit ({ANALYZER_THRESHOLD}); arayüzden seçilmez. "
             "CUDA varsa GPU, yoksa MPS/CPU. Klip kaydetmez."
         )
         av = gr.Video(label="video")
-        th = gr.Slider(0.05, 0.9, value=0.3, step=0.05, label="threshold")
         ao = gr.Textbox(label="segmentler", lines=12)
         img = gr.Image(label="grafik", type="filepath")
-        gr.Button("çalıştır").click(run_analyzer, [av, th], [ao, img])
+        gr.Button("çalıştır").click(run_analyzer, [av], [ao, img])
     with gr.Tab("Agent"):
         gr.Markdown(
             "LangGraph smoke: planner → executor → tool → reviewer. "

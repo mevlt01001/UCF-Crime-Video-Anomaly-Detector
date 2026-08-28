@@ -62,10 +62,16 @@ VIDEO_TOO_SHORT_ERROR = lambda vp, f, s : ValueError(f"Video {vp} is too short (
 
 
 def pick_device() -> torch.device:
+    """Analyzer cihazı. S3D 3D pooling MPS'te yok; CUDA yoksa CPU kullanılır."""
+    requested = (os.environ.get("AS_DEVICE") or "").strip().lower()
+    if requested in {"cpu", "cuda", "mps"}:
+        if requested == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("AS_DEVICE=cuda ama CUDA yok.")
+        if requested == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+            raise RuntimeError("AS_DEVICE=mps ama MPS yok.")
+        return torch.device(requested)
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
     return torch.device("cpu")
 
 

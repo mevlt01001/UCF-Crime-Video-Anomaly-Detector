@@ -20,6 +20,9 @@ langgraph==0.6.11
 
 # Lab UI
 gradio==6.26.0
+fastapi
+uvicorn
+python-multipart
 
 # ONNX / TensorRT export — sadece CUDA makinede, pip install -r ile kurulmaz
 # onnx

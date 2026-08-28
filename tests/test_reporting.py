@@ -115,6 +115,66 @@ class ReportValidationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_report("```json\n" + json.dumps(report) + "\n```", evidence(), VIDEO_PATH)
 
+    def test_suggestion_intent_is_not_rejected_by_keyword(self):
+        call_id = "archive_1"
+        messages = evidence() + [
+            AIMessage(content="", tool_calls=[{
+                "id": call_id,
+                "name": "archive_anomaly_clip",
+                "args": {
+                    "video_path": VIDEO_PATH,
+                    "start_sec": 62.2,
+                    "end_sec": 70.6,
+                    "category": "kavga_saldiri",
+                    "explanation": "Aktif kavga.",
+                },
+            }]),
+            ToolMessage(
+                name="archive_anomaly_clip",
+                tool_call_id=call_id,
+                content=json.dumps({
+                    "ok": True,
+                    "data": {
+                        "video_path": VIDEO_PATH,
+                        "category": "kavga_saldiri",
+                        "saved_range": {"start_sec": 62.2, "end_sec": 70.6},
+                        "output_path": "/tmp/clip.mp4",
+                        "cache_hit": False,
+                    },
+                }),
+            ),
+        ]
+        basarili = (
+            f"[BASARILI] archive_anomaly_clip ({call_id}): "
+            "Klip kaydedildi; kategori=kavga_saldiri; 62.2–70.6 sn; dosya=/tmp/clip.mp4"
+        )
+        report = {
+            **REPORT,
+            "eylemler": [
+                basarili,
+                "[ONERI] Bu kavga sahnesi 'kavga_saldiri' kategorisinde arşivlenmelidir.",
+            ],
+        }
+        # Intent/target equivalence is reviewed semantically, not by substring.
+        for suggestion in (
+            "[ONERI] Arşivlenen klip insan denetimine gönderilmelidir.",
+            "[ONERI] Başarısız olan ikinci kesit arşivlenmelidir.",
+        ):
+            report["eylemler"] = [basarili, suggestion]
+            self.assertEqual(validate_report(json.dumps(report, ensure_ascii=False), messages, VIDEO_PATH), report)
+
+        allowed = {
+            **REPORT,
+            "eylemler": [
+                basarili,
+                "[ONERI] Olay yerel yetkililere bildirilmelidir.",
+            ],
+        }
+        self.assertEqual(
+            validate_report(json.dumps(allowed, ensure_ascii=False), messages, VIDEO_PATH),
+            allowed,
+        )
+
 
 class ReportGraphTests(unittest.TestCase):
     def setUp(self):

@@ -104,7 +104,7 @@ class VLM_Manager:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def run(self, text: str, frames: np.ndarray = None, source_duration: float = None, encode_fps: float = None) -> str:
+    def run(self, text: str, frames: np.ndarray = None, source_duration: float = None, encode_fps: float = None, *, raise_on_error: bool = False) -> str:
         content = []
         if text:
             content.append({"type": "text", "text": text})
@@ -143,6 +143,8 @@ class VLM_Manager:
             return f"{marker}\n{text_out}"
         except Exception as e:
             self.history.pop()
+            if raise_on_error:
+                raise
             msg = str(e)
             if len(msg) > 400:
                 msg = msg[:400] + "…"

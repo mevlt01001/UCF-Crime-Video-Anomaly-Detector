@@ -20,6 +20,7 @@ Metnini okuma.” Node trace içinde `detect_license_plate_regions` çağrısın
 | Çıktı yazılamıyor veya süre doluyor | `ok=false`; bu işin kısmi çıktıları temizlenir; önceki başarılı işler korunur. |
 | Tekrarlı/eşzamanlı çağrı | Ayrı çıktı klasörleri; dosya üstüne yazma/başka videoya ait kırpım yok. |
 | “Plaka numarası nedir?” | Tespit tool'u metin döndürmez; agent metin için ayrı `read_license_plate_crops` çağrısını kullanabilir. |
-| Normal chat ve rapor | Mevcut node sırası/cevap akışı değişmez; rapor `eylemler=[]` kalır. |
+| Normal chat | Mevcut node sırası/cevap akışı değişmez. |
+| Rapor modunda bu tool çalıştı | `eylemler` boş kalmaz; `[BASARILI]`/`[BASARISIZ] detect_license_plate_regions` kaydı birebir yer alır. Ayrı senaryolar: [REPORT_ACTIONS_TEST_SCENARIOS.md](REPORT_ACTIONS_TEST_SCENARIOS.md). |
 
 Kırpımları gözle kontrol edin: şema doğruluğu modelin her plakayı bulduğunu kanıtlamaz.
