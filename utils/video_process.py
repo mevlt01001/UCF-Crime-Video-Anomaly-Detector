@@ -177,7 +177,15 @@ def generate_frames(video_path: os.PathLike,
                     FPS: float = 5,
                     max_frames: int = 32):
 
-    vr = VideoReader(video_path, ctx=cpu(0), width=448, height=336)
+    # Probe one native frame before decoding the batch at a bounded resolution.
+    # A fixed landscape size distorts portrait and widescreen source videos.
+    vr = VideoReader(video_path, ctx=cpu(0))
+    source_height, source_width = vr.get_batch([0]).asnumpy()[0].shape[:2]
+    scale = min(1.0, 448 / max(source_width, source_height))
+    width = max(1, round(source_width * scale))
+    height = max(1, round(source_height * scale))
+    del vr
+    vr = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
 
     total_frames = len(vr)
     video_fps = vr.get_avg_fps()

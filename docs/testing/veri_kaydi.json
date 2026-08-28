@@ -1,0 +1,161 @@
+{
+  "note": "Template only: no actual media or human labels supplied here. Do not commit private paths/plates without review.",
+  "videos": [
+    {
+      "video_id": "V01",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V02",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V03",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V04",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V05",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V06",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V07",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V08",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V09",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V10",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V11",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V12",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    },
+    {
+      "video_id": "V13",
+      "local_path": null,
+      "sha256": null,
+      "duration_sec": null,
+      "fps": null,
+      "width": null,
+      "height": null,
+      "human_events": [],
+      "human_labels_reviewed_by": [],
+      "privacy_notes": null
+    }
+  ]
+}

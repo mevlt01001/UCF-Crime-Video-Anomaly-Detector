@@ -385,7 +385,7 @@ segmentation_graph.png
 
 Manuel kabul senaryoları için:
 
-[SAVE_VIDEO_SEGMENT_TEST_SCENARIOS.md](SAVE_VIDEO_SEGMENT_TEST_SCENARIOS.md)
+[Manuel test senaryoları](docs/testing/02_MANUEL_TEST_PLANI.md)
 
 ## Model eğitimi
 

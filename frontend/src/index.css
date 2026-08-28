@@ -437,6 +437,28 @@ button {
   margin-bottom: 0.8rem;
 }
 
+.trace-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.usage-stat {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.step-usage {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .copy-btn {
   font-size: 0.75rem;
   padding: 0.28rem 0.55rem;

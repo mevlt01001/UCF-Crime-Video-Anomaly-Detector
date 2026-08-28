@@ -15,9 +15,11 @@ from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
 from utils.prompts import build_executor_system_prompt, build_planner_system_prompt, build_reviewer_system_prompt
-from utils.tools import tools
+from utils.tools import chat_tools, report_tools
 from utils.reporting import report_instructions, validate_report
 from utils.action_records import action_instructions
+from utils.usage_tracking import invoke_config
+from utils.video_context import prepare_video_context, video_context_prompt
 
 llm = ChatOpenAI(
     model=os.environ.get("EVREN_LLM_MODEL", "llm-fast"),
@@ -25,17 +27,26 @@ llm = ChatOpenAI(
     base_url=os.environ.get("EVREN_URL") or os.environ.get("EVREN_BASE_URL"),
     temperature=0.0,
 )
-llm_with_tools = llm.bind_tools(tools)
-_tool_node = ToolNode(tools)
+_chat_tool_node = ToolNode(chat_tools)
+_report_tool_node = ToolNode(report_tools)
 
-MAX_TOOL_ROUNDS = 8
+# Report: segmenter(1) + VLM×N + archive×M; 4-seg barber ≈8, +failed/retry → 14
+MAX_TOOL_ROUNDS = 14
 MAX_REVIEW_LOOPS = 2
 
 
-def _build_tool_catalog() -> str:
+def _tools_for_mode(output_mode):
+    return report_tools if output_mode == "report" else chat_tools
+
+
+def _tool_catalog_for_mode(output_mode):
+    return _build_tool_catalog(_tools_for_mode(output_mode))
+
+
+def _build_tool_catalog(registered_tools) -> str:
     """Planner/Reviewer yetenek bilgisini kayıtlı tool şemalarından üretir."""
     catalog = []
-    for registered_tool in tools:
+    for registered_tool in registered_tools:
         schema_model = registered_tool.args_schema
         if hasattr(schema_model, "model_json_schema"):
             parameters = schema_model.model_json_schema()
@@ -49,9 +60,6 @@ def _build_tool_catalog() -> str:
             }
         )
     return json.dumps(catalog, ensure_ascii=False)
-
-
-TOOL_CATALOG = _build_tool_catalog()
 
 
 class PlanStep(BaseModel):
@@ -80,6 +88,8 @@ class AgentState(TypedDict):
     video_path: str
     video_paths: list[str]
     image_paths: list[str]
+    # Only this job's technical snapshot; never appended to conversation_messages.
+    video_context: dict | None
     # Kalıcı, kullanıcıya dönük hafıza; tool/node mesajı içermez.
     conversation_messages: Sequence[BaseMessage]
     # Yalnızca bu görevin çalışma alanı; graph bitince dışarı taşınmaz.
@@ -88,6 +98,7 @@ class AgentState(TypedDict):
     feedback: str
     review_route: str
     final_answer: str
+    answer_approved: bool
     tool_rounds: int
     review_loops: int
 
@@ -104,22 +115,30 @@ def _work(state: AgentState) -> list[BaseMessage]:
     return list(state.get("messages") or [])
 
 
+def _video_path_for_context(state: AgentState):
+    return state.get("video_path") or (state.get("video_paths") or [None])[0] or None
+
+
 def planner_node(state: AgentState):
     """Temiz sohbet context'iyle plan üretir; tool izi kalıcı hafızaya sızmaz."""
+    video_path = _video_path_for_context(state)
+    context = prepare_video_context(video_path)
     prompt = build_planner_system_prompt(
         _target_video(state),
-        tool_catalog=TOOL_CATALOG,
+        tool_catalog=_tool_catalog_for_mode(state.get("output_mode")),
         previous_plan=state.get("plan", ""),
         feedback=state.get("feedback", ""),
     )
+    prompt += video_context_prompt(context, video_path)
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
     if state.get("output_mode") == "report":
         messages[0] = SystemMessage(content=prompt + report_instructions())
-    result = llm.with_structured_output(PlanResult).invoke(messages)
+    result = llm.with_structured_output(PlanResult).invoke(messages, invoke_config())
     return {
         "plan": json.dumps(result.model_dump(), ensure_ascii=False),
         "feedback": "",
         "review_route": "",
+        "video_context": context,
     }
 
 
@@ -130,11 +149,13 @@ def executor_node(state: AgentState):
         plan=state.get("plan", ""),
         feedback=state.get("feedback", ""),
     )
+    prompt += video_context_prompt(state.get("video_context"), _video_path_for_context(state))
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
     if state.get("output_mode") == "report":
         messages[0] = SystemMessage(content=prompt + "\nBu modda doğal dil nihai cevap yerine JSON raporu üret.\n"
                                     + report_instructions() + action_instructions(_work(state), _target_video(state)))
-    return {"messages": [llm_with_tools.invoke(messages)], "feedback": ""}
+    bound = llm.bind_tools(_tools_for_mode(state.get("output_mode")))
+    return {"messages": [bound.invoke(messages, invoke_config())], "feedback": ""}
 
 
 def _executor_answer(state: AgentState) -> str:
@@ -157,7 +178,8 @@ def _executor_answer(state: AgentState) -> str:
 
 
 def tools_node(state: AgentState):
-    out = _tool_node.invoke({"messages": _work(state)})
+    node = _report_tool_node if state.get("output_mode") == "report" else _chat_tool_node
+    out = node.invoke({"messages": _work(state)})
     out["tool_rounds"] = int(state.get("tool_rounds") or 0) + 1
     return out
 
@@ -179,8 +201,9 @@ def reviewer_node(state: AgentState):
     prompt = build_reviewer_system_prompt(
         state["user_query"],
         state.get("plan", ""),
-        tool_catalog=TOOL_CATALOG,
+        tool_catalog=_tool_catalog_for_mode(state.get("output_mode")),
     )
+    prompt += video_context_prompt(state.get("video_context"), _video_path_for_context(state))
     report = None
     validation_error = ""
     answer = _executor_answer(state)
@@ -201,14 +224,14 @@ def reviewer_node(state: AgentState):
             validation_error = str(exc)
             prompt += "\nKod doğrulaması başarısız: " + validation_error
     messages = [SystemMessage(content=prompt)] + _conversation(state) + _work(state)
-    result = llm.with_structured_output(ReviewResult).invoke(messages)
+    result = llm.with_structured_output(ReviewResult).invoke(messages, invoke_config())
     loops = int(state.get("review_loops") or 0)
 
     feedback = result.feedback.strip()
     if validation_error:
         feedback = "Rapor doğrulama hatası: " + validation_error + "\n" + feedback
     if result.is_complete and answer and not validation_error:
-        output = {"final_answer": answer, "feedback": feedback, "review_route": "", "review_loops": loops}
+        output = {"final_answer": answer, "answer_approved": True, "feedback": feedback, "review_route": "", "review_loops": loops}
         if state.get("output_mode") == "report":
             output["report"] = report
         return output
@@ -217,6 +240,7 @@ def reviewer_node(state: AgentState):
     if loops + 1 >= MAX_REVIEW_LOOPS:
         return {
             "final_answer": "İsteğiniz için doğrulanmış bir nihai yanıt hazırlayamadım. İşlem deneme sınırına ulaştığı için durduruldu; analiz tamamlanmış sayılmamalıdır.",
+            "answer_approved": False,
             "feedback": feedback,
             "review_route": "",
             "review_loops": loops + 1,
@@ -226,6 +250,7 @@ def reviewer_node(state: AgentState):
         "feedback": feedback or "Kullanıcıya yönelik, eldeki kanıtlarla desteklenen bir cevap hazırla.",
         "review_route": "executor" if result.is_complete else (result.route_to or "executor"),
         "final_answer": "",
+        "answer_approved": False,
         "review_loops": loops + 1,
     }
 

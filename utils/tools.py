@@ -103,7 +103,7 @@ def get_anomaly_segment_model() -> Video_Analyzer:
         return _anomaly_segment_model
 
     ckpt = _resolve_checkpoint()
-    if ckpt and not Path(ckpt).is_file():
+    if not ckpt or not Path(ckpt).is_file():
         raise FileNotFoundError(f"FC checkpoint yok: {ckpt}")
 
     print(f"[info] Analyzer yükleniyor device={DEVICE} ckpt={ckpt}")
@@ -603,28 +603,33 @@ def archive_anomaly_clip(
     end_sec: float,
     category: ArchiveCategory,
     explanation: str,
+    incident_id: str,
 ) -> str:
     """İlgili olay kesitini seçilen kategori altında yerel arşive kaydeder.
 
     Kategori görsel kanıta göre çağıran agent tarafından seçilir: hirsizlik,
     soygun, kavga_saldiri, trafik_kazasi, is_kazasi, diger, belirsiz.
     Olay türü biliniyor ama listede yoksa diger; türü anlaşılmıyorsa belirsiz.
+    incident_id (olay_id): Aynı rapor olayına ait tüm klipler aynı kimlikte
+    toplanır; örn. olay_1, olay_2. Farklı olaylar farklı incident_id kullanır.
     Kendisi olay sınıflandırmaz; explanation kanıta dayalı kısa gerekçedir.
     Tek kesit tek kategoriye kaydedilir; source video saniyeleri kullanılır.
     Bitiş video sonuna kırpılabilir, geçersiz başlangıç reddedilir.
-    _stuff/lab_runs/actions/archive/<category>/ altında MP4 ve metadata JSON
-    oluşturur. FFmpeg yeniden kodlama yapar; genel save_video_segment aracından
-    farklı olarak keyframe öncesini taşımayan kesim hedeflenir, kare hassasiyetindedir.
-    Aynı kaynak/aralık/kategori yeniden istenirse geçerli mevcut klip kullanılır;
-    cache_hit=True, ilk gerekçe korunur. Bozuk/eski kaydın üzerine yazılmaz.
-    Çıktı yolları output_path/metadata_path'tir. Kaynak değiştirilmez, dışarıya
-    aktarılmaz. Bu bir arşivleme eylemidir; raporun kendisini üretmez.
+    _stuff/lab_runs/actions/archive/<category>/<incident_id>/<anahtar>/clip.mp4
+    ve aynı olay klasöründe incident.json oluşturur. FFmpeg yeniden kodlama
+    yapar; genel save_video_segment aracından farklı olarak keyframe öncesini
+    taşımayan kesim hedeflenir, kare hassasiyetindedir.
+    Aynı kaynak/aralık/kategori/olay yeniden istenirse geçerli mevcut klip
+    kullanılır; cache_hit=True, ilk gerekçe korunur. Bozuk/eski kaydın üzerine
+    yazılmaz. Çıktı yolları output_path/metadata_path/incident_path'tir.
+    Kaynak değiştirilmez, dışarıya aktarılmaz. Bu bir arşivleme eylemidir;
+    raporun kendisini üretmez.
     """
     try:
         if not video_path or not os.path.isfile(video_path):
             return _tool_error("FILE_NOT_FOUND", "Kaynak video bulunamadı.")
         start, end, metadata, clamped = _validate_video_range(video_path, start_sec, end_sec)
-        data = archive_clip(video_path, start, end, category, explanation)
+        data = archive_clip(video_path, start, end, category, explanation, incident_id=incident_id)
         warnings = []
         if clamped:
             warnings.append({"code": "END_TIME_CLAMPED", "message": "Bitiş video sonunda sınırlandırıldı."})
@@ -676,13 +681,20 @@ def read_license_plate_crops(crops_manifest_path: str) -> str:
         return _tool_error("PLATE_OCR_ERROR", f"{type(exc).__name__}: {exc}")
 
 
-tools = [
-    run_abnormal_event_segmenter, 
-    analyze_video_with_vlm, 
-    save_video_segment, 
+REPORT_ONLY_TOOL_NAMES = frozenset({"archive_anomaly_clip"})
+
+report_tools = [
+    run_abnormal_event_segmenter,
+    analyze_video_with_vlm,
+    save_video_segment,
     get_video_info,
     detect_and_track_objects,
     detect_license_plate_regions,
     read_license_plate_crops,
     archive_anomaly_clip,
 ]
+
+chat_tools = [tool for tool in report_tools if tool.name not in REPORT_ONLY_TOOL_NAMES]
+
+# Geriye dönük uyumluluk: tam araç listesi.
+tools = report_tools

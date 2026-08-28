@@ -2,12 +2,14 @@ import os
 import cv2
 import base64
 import tempfile
+import time
 import numpy as np
 
 from typing import Optional
 from openai import OpenAI
 
 from .env import env_first, env_float, env_int, env_require
+from .usage_tracking import get_current_tracker
 
 # EVREN vlm: image_url yasak ("At most 0 image(s)"). video_url zorunlu.
 # 1 kare / yüksek çözünürlük Qwen3VLProcessor'ı kırıyor.
@@ -133,11 +135,15 @@ class VLM_Manager:
         )
 
         try:
+            started = time.perf_counter()
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=self.history,
                 temperature=self.temperature,
             )
+            tracker = get_current_tracker()
+            if tracker is not None:
+                tracker.record_openai_usage(response.usage, time.perf_counter() - started)
             text_out = response.choices[0].message.content or ""
             self.history.append({"role": "assistant", "content": text_out})
             return f"{marker}\n{text_out}"

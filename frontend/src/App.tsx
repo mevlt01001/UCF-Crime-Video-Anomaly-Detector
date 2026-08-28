@@ -5,11 +5,18 @@ import "./index.css";
 type Tab = "analyzer" | "report" | "chat";
 type Mode = "chat" | "report" | "analyzer";
 
+type NodeUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+};
+
 type NodeUpdate = {
   type: "node_update";
   node: string;
   summary: string;
   details: Record<string, unknown>;
+  node_usage?: NodeUsage;
   timestamp_ms: number;
 };
 
@@ -70,13 +77,20 @@ function parseToolResultNames(results: unknown): string[] {
 
 function formatTraceEvent(event: NodeUpdate, index: number): string {
   const time = new Date(event.timestamp_ms).toLocaleTimeString();
+  const usage = formatNodeUsage(event.node_usage);
+  const usageLine = usage ? `\nToken: ${usage}` : "";
   const details = Object.keys(event.details || {}).length ? `\n${JSON.stringify(event.details, null, 2)}` : "";
-  return `[${index + 1}] ${event.node} · ${time}\n${event.summary}${details}`;
+  return `[${index + 1}] ${event.node} · ${time}${usageLine}\n${event.summary}${details}`;
 }
 
 function formatFullTrace(events: NodeUpdate[]): string {
   if (!events.length) return "Canlı süreç boş.";
   return events.map((event, index) => formatTraceEvent(event, index)).join("\n\n");
+}
+
+function formatNodeUsage(usage: NodeUsage | undefined): string | null {
+  if (!usage || usage.total_tokens <= 0) return null;
+  return `${usage.total_tokens.toLocaleString("tr-TR")} token`;
 }
 
 function App() {
@@ -167,10 +181,7 @@ function App() {
   async function startJob(mode: Mode, message = ""): Promise<void> {
     if (operationRef.current) return;
     setErrorText(null);
-    setTrace([]);
-    setActiveTools(new Set());
-    setStatusText("İş başlatılıyor…");
-    if (mode !== "chat" && !activeVideoPath) {
+    if (!activeVideoPath) {
       setErrorText("Önce video yükleyin.");
       return;
     }
@@ -178,6 +189,9 @@ function App() {
       setErrorText("Mesaj boş olamaz.");
       return;
     }
+    setTrace([]);
+    setActiveTools(new Set());
+    setStatusText("İş başlatılıyor…");
     operationRef.current = true;
     setRunning(true);
     setJobId(null);
@@ -545,21 +559,26 @@ function App() {
               <aside className="trace-col">
                 <div className="trace-head">
                   <h2>Canlı süreç</h2>
-                  <button
-                    className="ghost copy-btn"
-                    type="button"
-                    disabled={!trace.length}
-                    onClick={() => copyText("all", formatFullTrace(trace))}
-                  >
-                    {copiedKey === "all" ? "Kopyalandı" : "Tümünü kopyala"}
-                  </button>
+                  <div className="trace-head-actions">
+                    <button
+                      className="ghost copy-btn"
+                      type="button"
+                      disabled={!trace.length}
+                      onClick={() => copyText("all", formatFullTrace(trace))}
+                    >
+                      {copiedKey === "all" ? "Kopyalandı" : "Tümünü kopyala"}
+                    </button>
+                  </div>
                 </div>
                 {trace.length === 0 ? <p className="meta">Tüm sekmelerin çalışma adımları burada akar.</p> : null}
-                {trace.map((event, index) => (
+                {trace.map((event, index) => {
+                  const nodeUsage = formatNodeUsage(event.node_usage);
+                  return (
                   <article key={`${event.node}-side-${index}`} className="step">
                     <header>
                       <span className="node">{event.node}</span>
                       <span className="step-actions">
+                        {nodeUsage ? <span className="step-usage">{nodeUsage}</span> : null}
                         <span>{new Date(event.timestamp_ms).toLocaleTimeString()}</span>
                         <button
                           className="ghost copy-btn"
@@ -576,7 +595,8 @@ function App() {
                       <pre>{JSON.stringify(event.details, null, 2)}</pre>
                     </details>
                   </article>
-                ))}
+                  );
+                })}
                 {running ? (
                   <button className="danger" type="button" disabled={!jobId} onClick={() => cancelJob().catch((error: unknown) => setErrorText(String(error)))}>
                     İptal

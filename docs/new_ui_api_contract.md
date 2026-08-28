@@ -113,6 +113,13 @@ Event data schema (all messages include `type` and `timestamp_ms`):
   - `node`: `planner|executor|tools|tool_limit|reviewer`
   - `summary`: short human-readable line
   - `details`: node payload for UI cards
+  - `node_usage`: token delta for this node (`input_tokens`, `output_tokens`, `total_tokens`)
+- `usage_update`: cumulative Evren token usage for the current job
+  - `input_tokens`, `output_tokens`
+  - `total_tokens`: null when `complete=false`
+  - `tokens_per_sec`: output tokens per second over completed LLM/VLM API call time; null when unavailable
+  - `complete`: false if any model response omitted usage metadata
+  - `api_duration_sec`: summed LLM/VLM API wall time for the job
 - `chat_final`: final approved assistant text + full chat history
 - `report_final`: validated report JSON + downloadable file URL
 - `job_cancelled`: cancellation acknowledged

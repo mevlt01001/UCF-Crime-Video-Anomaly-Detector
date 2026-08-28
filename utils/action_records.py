@@ -21,8 +21,9 @@ def _summary(name, data):
     if name in {"save_video_segment", "archive_anomaly_clip"}:
         interval = data.get("saved_range") or {}
         category = f"kategori={_text(data.get('category'))}; " if name == "archive_anomaly_clip" else ""
+        incident = f"olay={_text(data.get('incident_id'))}; " if name == "archive_anomaly_clip" and data.get("incident_id") else ""
         reused = "Mevcut kayıt kullanıldı" if data.get("cache_hit") else "Klip kaydedildi"
-        return (f"{reused}; {category}{interval.get('start_sec')}–{interval.get('end_sec')} sn; "
+        return (f"{reused}; {incident}{category}{interval.get('start_sec')}–{interval.get('end_sec')} sn; "
                 f"dosya={_text(data.get('output_path'))}")
     if name == "detect_and_track_objects":
         summary = f"Nesne takibi tamamlandı; karelerdeki toplam kutu={data.get('detection_count')}; tekil nesne sayısı değildir"

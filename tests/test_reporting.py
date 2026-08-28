@@ -11,17 +11,11 @@ from unittest.mock import MagicMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from utils.action_records import action_records
 from utils.reporting import REPORT_TASK, validate_report
 
 
 VIDEO_PATH = "/test/video.mp4"
-REPORT = {
-    "ozet": "Dört aday aralık incelendi; son kesitte fiziksel çatışma görülüyor.",
-    "olaylar": [{"saniye": 62.2, "aciklama": "62.2–70.6 saniyelik kesitin başlangıcı; fiziksel çatışma."}],
-    "risk_seviyesi": "yuksek",
-    "eylemler": [],
-}
-REPORT_JSON = json.dumps(REPORT, ensure_ascii=False)
 SEGMENTS = [(12.8, 19.8), (20.4, 27.8), (31.9, 51.0), (62.2, 70.7)]
 
 
@@ -45,10 +39,70 @@ def evidence():
                 "Fiziksel çatışma görülüyor." if index == 3 else "Olağan faaliyetler görülüyor."
             ),
         }))
-    return messages
+    start, end = SEGMENTS[3]
+    messages.extend([
+        AIMessage(content="", tool_calls=[{
+            "id": "archive_1",
+            "name": "archive_anomaly_clip",
+            "args": {
+                "video_path": VIDEO_PATH,
+                "start_sec": start,
+                "end_sec": end,
+                "category": "kavga_saldiri",
+                "explanation": "Test arşivi.",
+                "incident_id": "olay_1",
+            },
+        }]),
+        message("archive_anomaly_clip", "archive_1", {
+            "category": "kavga_saldiri",
+            "incident_id": "olay_1",
+            "saved_range": {"start_sec": start, "end_sec": end},
+            "output_path": "/tmp/clip_3.mp4",
+            "cache_hit": False,
+        }),
+    ])
+    paired = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage) and msg.name != "archive_anomaly_clip":
+            paired.append(AIMessage(content="", tool_calls=[{
+                "id": msg.tool_call_id, "name": msg.name, "args": {"video_path": VIDEO_PATH},
+            }]))
+        paired.append(msg)
+    return paired
+
+
+def expected_report(**changes):
+    base = {
+        "ozet": "Dört aday aralık incelendi; son kesitte fiziksel çatışma görülüyor.",
+        "olaylar": [{
+            "olay_id": "olay_1",
+            "saniye": 62.2,
+            "aciklama": "62.2–70.6 saniyelik kesitin başlangıcı; fiziksel çatışma.",
+        }],
+        "risk_seviyesi": "yuksek",
+        "eylemler": action_records(evidence(), VIDEO_PATH),
+    }
+    base.update(changes)
+    return base
+
+
+REPORT = expected_report()
+REPORT_JSON = json.dumps(REPORT, ensure_ascii=False)
 
 
 class ReportValidationTests(unittest.TestCase):
+    def test_visual_evidence_must_match_call_name_and_target(self):
+        for field, value in [("name", "get_video_info"), ("video_path", "/other.mp4")]:
+            messages = evidence()
+            call = next(m.tool_calls[0] for m in messages if isinstance(m, AIMessage)
+                        and m.tool_calls[0]["name"] == "analyze_video_with_vlm")
+            if field == "name":
+                call["name"] = value
+            else:
+                call["args"]["video_path"] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_report(REPORT_JSON, messages, VIDEO_PATH)
+
     def test_supported_presentation_wrappers(self):
         variants = [
             REPORT_JSON,
@@ -93,8 +147,8 @@ class ReportValidationTests(unittest.TestCase):
             {"risk_seviyesi": "bilinmiyor"},
             {"ozet": "   "},
             {"fazladan_alan": True},
-            {"olaylar": [{"saniye": "62.2", "aciklama": "Olay"}]},
-            {"olaylar": [{"saniye": float("nan"), "aciklama": "Olay"}]},
+            {"olaylar": [{"olay_id": "olay_1", "saniye": "62.2", "aciklama": "Olay"}]},
+            {"olaylar": [{"olay_id": "olay_1", "saniye": float("nan"), "aciklama": "Olay"}]},
         ]:
             with self.subTest(changes=changes):
                 answer = "```json\n" + json.dumps({**REPORT, **changes}) + "\n```"
@@ -111,69 +165,32 @@ class ReportValidationTests(unittest.TestCase):
     def test_wrapper_does_not_bypass_event_time_checks(self):
         for seconds in [-1, 60, 70.6, 90]:
             with self.subTest(seconds=seconds):
-                report = {**REPORT, "olaylar": [{"saniye": seconds, "aciklama": "Olay"}]}
+                report = {**REPORT, "olaylar": [{"olay_id": "olay_1", "saniye": seconds, "aciklama": "Olay"}]}
                 with self.assertRaises(ValueError):
                     validate_report("```json\n" + json.dumps(report) + "\n```", evidence(), VIDEO_PATH)
 
     def test_suggestion_intent_is_not_rejected_by_keyword(self):
-        call_id = "archive_1"
-        messages = evidence() + [
-            AIMessage(content="", tool_calls=[{
-                "id": call_id,
-                "name": "archive_anomaly_clip",
-                "args": {
-                    "video_path": VIDEO_PATH,
-                    "start_sec": 62.2,
-                    "end_sec": 70.6,
-                    "category": "kavga_saldiri",
-                    "explanation": "Aktif kavga.",
-                },
-            }]),
-            ToolMessage(
-                name="archive_anomaly_clip",
-                tool_call_id=call_id,
-                content=json.dumps({
-                    "ok": True,
-                    "data": {
-                        "video_path": VIDEO_PATH,
-                        "category": "kavga_saldiri",
-                        "saved_range": {"start_sec": 62.2, "end_sec": 70.6},
-                        "output_path": "/tmp/clip.mp4",
-                        "cache_hit": False,
-                    },
-                }),
-            ),
-        ]
-        basarili = (
-            f"[BASARILI] archive_anomaly_clip ({call_id}): "
-            "Klip kaydedildi; kategori=kavga_saldiri; 62.2–70.6 sn; dosya=/tmp/clip.mp4"
-        )
+        messages = evidence()
+        records = action_records(messages, VIDEO_PATH)
+        basarili = next(entry for entry in records if "kavga_saldiri" in entry)
         report = {
             **REPORT,
-            "eylemler": [
-                basarili,
-                "[ONERI] Bu kavga sahnesi 'kavga_saldiri' kategorisinde arşivlenmelidir.",
-            ],
+            "eylemler": records + ["[ONERI] Bu kavga sahnesi 'kavga_saldiri' kategorisinde arşivlenmelidir."],
         }
         # Intent/target equivalence is reviewed semantically, not by substring.
         for suggestion in (
             "[ONERI] Arşivlenen klip insan denetimine gönderilmelidir.",
             "[ONERI] Başarısız olan ikinci kesit arşivlenmelidir.",
         ):
-            report["eylemler"] = [basarili, suggestion]
-            self.assertEqual(validate_report(json.dumps(report, ensure_ascii=False), messages, VIDEO_PATH), report)
+            candidate = {**REPORT, "eylemler": records + [suggestion]}
+            self.assertEqual(validate_report(json.dumps(candidate, ensure_ascii=False), messages, VIDEO_PATH), candidate)
 
-        allowed = {
-            **REPORT,
-            "eylemler": [
-                basarili,
-                "[ONERI] Olay yerel yetkililere bildirilmelidir.",
-            ],
-        }
+        allowed = {**REPORT, "eylemler": records + ["[ONERI] Olay yerel yetkililere bildirilmelidir."]}
         self.assertEqual(
             validate_report(json.dumps(allowed, ensure_ascii=False), messages, VIDEO_PATH),
             allowed,
         )
+        self.assertIn(basarili, records)
 
 
 class ReportGraphTests(unittest.TestCase):
@@ -185,11 +202,14 @@ class ReportGraphTests(unittest.TestCase):
         self.agents = importlib.util.module_from_spec(spec)
         tool_module = types.ModuleType("utils.tools")
         tool_module.tools = []
+        tool_module.chat_tools = []
+        tool_module.report_tools = []
         with patch.dict(sys.modules, {spec.name: self.agents, "utils.tools": tool_module}), patch("langchain_openai.ChatOpenAI"):
             spec.loader.exec_module(self.agents)
         self.agents.llm = MagicMock()
-        self.agents.llm_with_tools = MagicMock()
-        self.agents._tool_node = MagicMock()
+        self.executor_llm = MagicMock()
+        self.agents.llm.bind_tools.return_value = self.executor_llm
+        self.agents._report_tool_node = MagicMock()
         self.plan = self.agents.PlanResult(needs_tool=True, reasoning="Anomalileri incele.", steps=[])
         self.review = self.agents.ReviewResult(is_complete=True, feedback="Kanıtlar yeterli.")
         self.reviewer = MagicMock()
@@ -207,7 +227,7 @@ class ReportGraphTests(unittest.TestCase):
         }
 
     def prepare_graph(self):
-        self.agents.llm_with_tools.invoke.side_effect = [
+        self.executor_llm.invoke.side_effect = [
             AIMessage(content="", tool_calls=[{
                 "id": "segment", "name": "run_abnormal_event_segmenter", "args": {"video_path": VIDEO_PATH},
             }]),
@@ -215,17 +235,29 @@ class ReportGraphTests(unittest.TestCase):
                 "id": f"visual_{i}", "name": "analyze_video_with_vlm",
                 "args": {"video_path": VIDEO_PATH, "query": "İncele", "start_sec": start, "end_sec": end},
             } for i, (start, end) in enumerate(SEGMENTS)]),
+            AIMessage(content="", tool_calls=[{
+                "id": "archive_1", "name": "archive_anomaly_clip",
+                "args": {
+                    "video_path": VIDEO_PATH, "start_sec": SEGMENTS[3][0], "end_sec": SEGMENTS[3][1],
+                    "category": "kavga_saldiri", "explanation": "Test arşivi.", "incident_id": "olay_1",
+                },
+            }]),
             AIMessage(content="Detaylı analiz tamamlandı.\n```json\n" + REPORT_JSON + "\n```"),
         ]
-        messages = evidence()
-        self.agents._tool_node.invoke.side_effect = [{"messages": messages[:1]}, {"messages": messages[1:]}]
+        messages = [msg for msg in evidence() if isinstance(msg, ToolMessage)]
+        self.agents._report_tool_node.invoke.side_effect = [
+            {"messages": [messages[0]]},
+            {"messages": messages[1:5]},
+            {"messages": [messages[-1]]},
+        ]
 
     def assert_completed_report(self, state):
+        self.assertTrue(state["answer_approved"])
         self.assertEqual(state["report"], REPORT)
         self.assertEqual(json.loads(state["final_answer"]), REPORT)
         self.assertEqual(state["review_loops"], 0)
-        self.assertEqual(self.agents._tool_node.invoke.call_count, 2)
-        self.assertEqual(self.agents.llm_with_tools.invoke.call_count, 3)
+        self.assertEqual(self.agents._report_tool_node.invoke.call_count, 3)
+        self.assertEqual(self.executor_llm.invoke.call_count, 4)
         self.assertEqual(self.reviewer.invoke.call_count, 1)
 
     def test_gradio_sync_graph_finishes_without_reanalyzing(self):
@@ -266,6 +298,7 @@ class ReportGraphTests(unittest.TestCase):
         result = self.agents.reviewer_node(self.state)
         self.assertNotIn("report", result)
         self.assertIn("doğrulanmış bir nihai yanıt hazırlayamadım", result["final_answer"])
+        self.assertFalse(result["answer_approved"])
 
     def test_chat_response_is_not_normalized(self):
         answer = "Merhaba.\n```json\n" + REPORT_JSON + "\n```"

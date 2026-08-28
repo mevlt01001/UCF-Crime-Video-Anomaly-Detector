@@ -32,6 +32,7 @@ from ui_backend.contracts import (
 from ui_backend.lab_runs import ModelContext, run_analyzer, run_llm, run_vlm
 from utils.agents import video_agent_app
 from utils.reporting import REPORT_TASK
+from utils.usage_tracking import JobUsageTracker, reset_current_tracker, set_current_tracker
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = ROOT / "_stuff" / "lab_runs"
@@ -160,6 +161,13 @@ def _emit(job: JobState, payload: dict[str, Any]) -> None:
     job.queue.put(payload)
 
 
+def _emit_usage(job: JobState, tracker: JobUsageTracker) -> None:
+    payload = tracker.snapshot().as_payload()
+    payload["type"] = "usage_update"
+    payload["job_id"] = job.job_id
+    _emit(job, payload)
+
+
 def _normalize_node_update(node_name: str, update: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     summary = f"[{node_name}]"
     details: dict[str, Any] = {}
@@ -211,7 +219,8 @@ def _normalize_node_update(node_name: str, update: dict[str, Any]) -> tuple[str,
         details["feedback"] = feedback
         details["final_answer"] = final_answer
         if final_answer:
-            summary += " final answer approved"
+            details["answer_approved"] = update.get("answer_approved") is True
+            summary += " final answer approved" if details["answer_approved"] else " finished without approval"
         elif feedback:
             summary += f" feedback: {feedback[:160]}"
     else:
@@ -250,9 +259,12 @@ def _build_initial_state(mode: str, session: SessionState, message: str = "") ->
 
 def _run_job(job: JobState, message: str = "") -> None:
     _emit(job, {"type": "job_started", "job_id": job.job_id, "session_id": job.session_id, "mode": job.mode})
+    tracker = JobUsageTracker(on_update=lambda _snap: _emit_usage(job, tracker))
+    tracker_token = set_current_tracker(tracker)
+    _emit_usage(job, tracker)
     try:
         session = _get_session_or_404(job.session_id)
-        if job.mode != "chat" and not session.active_video_path:
+        if not session.active_video_path:
             raise ValueError("Önce video yükleyin.")
         if job.mode == "chat" and not message.strip():
             raise ValueError("Mesaj boş.")
@@ -270,11 +282,17 @@ def _run_job(job: JobState, message: str = "") -> None:
         final_answer = ""
         report_data = None
 
-        for event in video_agent_app.stream(state, {"recursion_limit": 40}):
+        stream_config = {
+            "recursion_limit": 40,
+            "callbacks": [tracker.callback_handler],
+        }
+        usage_before_node = tracker.snapshot()
+        for event in video_agent_app.stream(state, stream_config):
             if _cancelled(job):
                 return
             for node_name, update in event.items():
                 summary, details = _normalize_node_update(node_name, update)
+                usage_after_node = tracker.snapshot()
                 _emit(
                     job,
                     {
@@ -283,8 +301,11 @@ def _run_job(job: JobState, message: str = "") -> None:
                         "node": node_name,
                         "summary": summary,
                         "details": details,
+                        "node_usage": usage_after_node.delta_since(usage_before_node),
                     },
                 )
+                usage_before_node = usage_after_node
+                _emit_usage(job, tracker)
                 if node_name == "reviewer" and update.get("final_answer"):
                     final_answer = update["final_answer"]
                 if update.get("report") is not None:
@@ -338,6 +359,8 @@ def _run_job(job: JobState, message: str = "") -> None:
     except Exception as exc:
         _emit(job, {"type": "job_error", "job_id": job.job_id, "message": f"{type(exc).__name__}: {exc}"})
     finally:
+        _emit_usage(job, tracker)
+        reset_current_tracker(tracker_token)
         _get_session_or_404(job.session_id).operation_lock.release()
         job.done_event.set()
         _emit(job, {"type": "done", "job_id": job.job_id})
@@ -349,6 +372,9 @@ def _start_job(mode: str, session_id: str, message: str = "") -> JobState:
     session = _get_or_create_session(session_id)
     if not session.operation_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Bu oturumda zaten çalışan bir iş var.")
+    if not session.active_video_path:
+        session.operation_lock.release()
+        raise HTTPException(status_code=400, detail="Önce video yükleyin.")
     job = JobState(job_id=str(uuid.uuid4()), session_id=session_id, mode=mode)
     with _jobs_lock:
         _jobs[job.job_id] = job

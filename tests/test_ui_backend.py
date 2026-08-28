@@ -39,10 +39,22 @@ class BackendTests(unittest.TestCase):
             {'reviewer': {'final_answer': 'Merhaba'}}
         ])):
             response = self.start()
-            self.assertEqual(response.status_code, 200)
-            job = self.server._jobs[response.json()['job_id']]
-            self.assertIn('chat_final', [x['type'] for x in self.events(job)])
-            self.assertEqual(len(self.session.lc_messages), 2)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()['detail'], 'Önce video yükleyin.')
+            self.assertFalse(self.server._jobs)
+            self.assertEqual(self.session.lc_messages, [])
+            self.assertFalse(self.session.operation_lock.locked())
+
+    def test_analyzer_emits_zero_usage(self):
+        self.session.active_video_path = '/tmp/example.mp4'
+        with patch.object(self.server, 'run_analyzer', return_value=('segments', None)):
+            job = self.server._jobs[self.start('analyzer').json()['job_id']]
+            usage_events = [x for x in self.events(job) if x['type'] == 'usage_update']
+            self.assertTrue(usage_events)
+            final = usage_events[-1]
+            self.assertEqual(final['total_tokens'], 0)
+            self.assertIsNone(final['tokens_per_sec'])
+            self.assertTrue(final['complete'])
 
     def test_analyzer_cancel_and_busy_session(self):
         self.session.active_video_path = '/tmp/example.mp4'
@@ -121,6 +133,7 @@ class BackendTests(unittest.TestCase):
             self.assertIn('private-b', ask('b', 'followup-b'))
 
     def test_cancelled_chat_does_not_commit_history(self):
+        self.session.active_video_path = '/tmp/example.mp4'
         entered, release = Event(), Event()
         def stream(*args):
             entered.set()
